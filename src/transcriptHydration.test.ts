@@ -1,0 +1,149 @@
+import { describe, expect, it } from "vitest";
+import type { AgentSessionTranscriptLine } from "@dartsnut/desktop-contracts";
+import { mergeTimelineSkillStatusEntry, transcriptLineToTimelineEntry } from "./rawTimeline";
+
+describe("transcript hydration", () => {
+  it("maps assistant transcript lines to agent markdown entries", () => {
+    const line: AgentSessionTranscriptLine = {
+      kind: "assistant",
+      at: 1,
+      text: "**hello**"
+    };
+    const entry = transcriptLineToTimelineEntry(line, 0);
+    expect(entry).toMatchObject({
+      role: "agent",
+      text: "**hello**"
+    });
+  });
+
+  it("maps thinking transcript lines to collapsed thought entries", () => {
+    const line: AgentSessionTranscriptLine = {
+      kind: "thinking",
+      at: 2,
+      text: "reasoning body"
+    };
+    const entry = transcriptLineToTimelineEntry(line, 0);
+    expect(entry).toMatchObject({
+      role: "status",
+      text: "Thought from transcript",
+      reasoningMode: "summary",
+      reasoningFullText: "reasoning body"
+    });
+  });
+
+  it("maps structured tool transcript lines to tool timeline entries", () => {
+    const line: AgentSessionTranscriptLine = {
+      kind: "tool",
+      at: 2,
+      text: "",
+      toolName: "read_file",
+      toolCall: {
+        type: "tool_call",
+        phase: "started",
+        at: 2,
+        runId: "run-1",
+        callId: "call-1",
+        toolName: "read_file",
+        inputPreview: { path: "main.py" }
+      }
+    };
+    expect(transcriptLineToTimelineEntry(line, 0)).toMatchObject({
+      role: "tool",
+      toolRun: {
+        runId: "run-1",
+        calls: [{ callId: "call-1", status: "running" }]
+      }
+    });
+  });
+
+  it("maps tool_status transcript lines to parsed status metadata", () => {
+    const line: AgentSessionTranscriptLine = {
+      kind: "tool_status",
+      at: 3,
+      text:
+        "Created main.py. @@tool_status_meta@@{\"callId\":\"c1\",\"toolName\":\"write_file\",\"phase\":\"result\",\"filePath\":\"main.py\",\"added\":10,\"deleted\":0}"
+    };
+    const entry = transcriptLineToTimelineEntry(line, 0);
+    expect(entry).toMatchObject({
+      role: "status",
+      text: "Created main.py.",
+      toolStatusMeta: {
+        callId: "c1",
+        toolName: "write_file",
+        phase: "result",
+        filePath: "main.py",
+        added: 10,
+        deleted: 0
+      }
+    });
+  });
+
+  it("maps persisted Dartsnut skill tool statuses with skill metadata", () => {
+    const line: AgentSessionTranscriptLine = {
+      kind: "tool_status",
+      at: 4,
+      text:
+        "Loaded Dartsnut skill. @@tool_status_meta@@{\"callId\":\"c2\",\"toolName\":\"get_dartsnut_skill\",\"phase\":\"result\",\"skillId\":\"dartsnut-core\"}"
+    };
+
+    expect(transcriptLineToTimelineEntry(line, 0)).toMatchObject({
+      role: "status",
+      text: "Loaded Dartsnut skill.",
+      toolStatusMeta: {
+        toolName: "get_dartsnut_skill",
+        phase: "result",
+        skillId: "dartsnut-core"
+      }
+    });
+  });
+
+  it("hides persisted internal agent lifecycle statuses", () => {
+    const startedLine: AgentSessionTranscriptLine = {
+      kind: "tool_status",
+      at: 5,
+      text: "Dartsnut Agent run started."
+    };
+    const agentLine: AgentSessionTranscriptLine = {
+      kind: "tool_status",
+      at: 6,
+      text: "Agent: DartsnutAgent"
+    };
+
+    expect(transcriptLineToTimelineEntry(startedLine, 0)).toBeNull();
+    expect(transcriptLineToTimelineEntry(agentLine, 1)).toBeNull();
+  });
+
+  it("merges Dartsnut skill status entries into one summary line", () => {
+    const first = transcriptLineToTimelineEntry(
+      {
+        kind: "tool_status",
+        at: 7,
+        text:
+          "Loaded Dartsnut skill. @@tool_status_meta@@{\"callId\":\"c3\",\"toolName\":\"get_dartsnut_skill\",\"phase\":\"result\",\"skillId\":\"dartsnut-core\"}"
+      },
+      0
+    );
+    const second = transcriptLineToTimelineEntry(
+      {
+        kind: "tool_status",
+        at: 8,
+        text:
+          "Loaded Dartsnut skill. @@tool_status_meta@@{\"callId\":\"c4\",\"toolName\":\"get_dartsnut_skill\",\"phase\":\"result\",\"skillId\":\"dartsnut-widget\"}"
+      },
+      1
+    );
+
+    expect(first).not.toBeNull();
+    expect(second).not.toBeNull();
+    const merged = mergeTimelineSkillStatusEntry(first!, second!);
+
+    expect(merged).toMatchObject({
+      text: "Loaded skills: dartsnut-core, dartsnut-widget",
+      toolStatusMeta: {
+        toolName: "get_dartsnut_skill",
+        phase: "result",
+        skillIds: ["dartsnut-core", "dartsnut-widget"]
+      }
+    });
+  });
+});

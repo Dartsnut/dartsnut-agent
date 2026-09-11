@@ -1,0 +1,60 @@
+{
+  "name": "dartsnut-agent",
+  "version": "2.0.0",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "tauri dev",
+    "dev:renderer": "vite --host 127.0.0.1 --port 5173 --strictPort",
+    "build:contracts": "pnpm --dir packages/desktop-contracts run build && pnpm --dir packages/emulator-protocol run build",
+    "build:renderer": "vite build",
+    "build:tauri": "pnpm run build:contracts && tauri build",
+    "build": "pnpm run build:tauri",
+    "package": "pnpm run build:tauri",
+    "package:tauri:mac": "pnpm run build:contracts && tauri build --target aarch64-apple-darwin --bundles app,dmg --config src-tauri/tauri.release.conf.json",
+    "package:tauri:win": "pnpm run build:contracts && tauri build --target x86_64-pc-windows-msvc --bundles nsis --config src-tauri/tauri.release.conf.json",
+    "package:mac": "node scripts/build-release.mjs --platform mac",
+    "package:win": "node scripts/build-release.mjs --platform win",
+    "start:packaged": "open src-tauri/target/release/bundle/macos/Dartsnut\\ Agent.app",
+    "release:publish": "node scripts/publish-release.mjs",
+    "test:release-publish": "node --test scripts/publish_release.test.js",
+    "test:release-build": "node --test scripts/build-release.test.mjs",
+    "test:renderer": "vitest run",
+    "test:updater": "vitest run src/appUpdateStartup.test.ts && cargo test --offline --manifest-path src-tauri/Cargo.toml updates",
+    "test": "pnpm --dir packages/desktop-contracts run test && pnpm --dir packages/emulator-protocol run test && pnpm run test:renderer && pnpm run test:release-build && pnpm run test:release-publish",
+    "export:agent-plugin": "node scripts/export_agent_plugin.mjs",
+    "check:agent-plugin": "node scripts/export_agent_plugin.mjs --check && node scripts/check_agent_plugin.mjs",
+    "test:e2e:agent": "cargo test --manifest-path src-tauri/Cargo.toml",
+    "e2e:up": "npm --prefix ../dartsnut-community-api run e2e:up",
+    "e2e:down": "npm --prefix ../dartsnut-community-api run e2e:down",
+    "test:e2e": "npm --prefix ../dartsnut-community-api run test:e2e && pnpm run test:e2e:agent"
+  },
+  "dependencies": {
+    "@dartsnut/desktop-contracts": "workspace:*",
+    "@dartsnut/emulator-protocol": "workspace:*",
+    "@tauri-apps/api": "^2.11.1",
+    "clsx": "^2.1.1",
+    "firebase": "^12.16.0",
+    "highlight.js": "^11.11.1",
+    "lucide-react": "^1.31.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-markdown": "^9.0.1",
+    "remark-gfm": "^4.0.0",
+    "tailwind-merge": "^3.6.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.0",
+    "@tauri-apps/cli": "^2.11.1",
+    "@types/node": "^22.15.3",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.4.1",
+    "tailwindcss": "^4.3.0",
+    "typescript": "^5.8.3",
+    "vite": "^6.3.5",
+    "vitest": "^3.2.4"
+  }
+}

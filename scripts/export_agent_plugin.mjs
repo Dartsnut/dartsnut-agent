@@ -1,0 +1,302 @@
+#!/usr/bin/env node
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const repoRoot = path.resolve(__dirname, "..");
+
+const args = new Set(process.argv.slice(2));
+const checkOnly = args.has("--check");
+
+const sourceSkillsDir = path.join(repoRoot, "src-tauri", "resources", "skills");
+const pluginRoot = path.join(repoRoot, "plugins", "dartsnut-agent");
+const codexMarketplacePath = path.join(repoRoot, ".agents", "plugins", "marketplace.json");
+const claudeMarketplacePath = path.join(repoRoot, ".claude-plugin", "marketplace.json");
+
+const exportedSkills = [
+  "dartsnut-core",
+  "dartsnut-game",
+  "dartsnut-widget"
+];
+
+const skillDescriptions = {
+  "dartsnut-core": "Core project contract, pydartsnut integration, display mapping, and verification.",
+  "dartsnut-game": "Pygame game loops, machine input APIs, dependencies, and game layout.",
+  "dartsnut-widget": "Pillow widget loops, parameters, fonts, dependencies, and widget layout.",
+};
+
+function readText(filePath) {
+  return fs.readFileSync(filePath, "utf8");
+}
+
+function writeJson(filePath, value) {
+  writeText(filePath, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+function writeText(filePath, value) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, value);
+}
+
+function rimraf(dirPath) {
+  fs.rmSync(dirPath, { recursive: true, force: true });
+}
+
+function normalizeSkillBody(skillId, body) {
+  let normalized = body.replace(/\r\n/g, "\n").trimEnd();
+
+  normalized = normalized.replace(/get_dartsnut_skill/g, "the corresponding Dartsnut plugin skill");
+
+  if (/^---\n[\s\S]*?\n---\n/.test(normalized)) {
+    return normalized;
+  }
+
+  const description = skillDescriptions[skillId];
+  return [
+    "---",
+    `name: ${skillId}`,
+    `description: ${description}`,
+    "license: MIT",
+    "---",
+    "",
+    normalized
+  ].join("\n");
+}
+
+function buildCodexManifest() {
+  const manifest = {
+    name: "dartsnut-agent",
+    version: "0.1.0",
+    description: "Dartsnut agent skills and firmware bridge for building games and widgets.",
+    author: {
+      name: "Dartsnut"
+    },
+    license: "MIT",
+    keywords: ["dartsnut", "skills", "firmware", "mcp", "widgets", "games"],
+    skills: "./skills/",
+    interface: {
+      displayName: "Dartsnut Agent",
+      shortDescription: "Skills and firmware tools for Dartsnut machines.",
+      longDescription:
+        "Build, modify, and verify Dartsnut games and widgets with packaged domain skills and a local firmware MCP bridge.",
+      developerName: "Dartsnut",
+      category: "Developer Tools",
+      capabilities: ["Write", "MCP"],
+      defaultPrompt: [
+        "Build a Dartsnut game.",
+        "Create a Dartsnut widget.",
+        "Review my Dartsnut project."
+      ],
+      brandColor: "#00A88F"
+    }
+  };
+
+  manifest.mcpServers = "./.mcp.json";
+
+  return manifest;
+}
+
+function buildClaudeManifest() {
+  return {
+    name: "dartsnut-agent",
+    description: "Dartsnut agent skills and firmware bridge for building games and widgets.",
+    author: {
+      name: "Dartsnut"
+    }
+  };
+}
+
+function buildMcpConfig() {
+  return {
+    mcpServers: {
+      "dartsnut-firmware": {
+        type: "http",
+        url: "${DARTSNUT_MACHINE_URL}/mcp"
+      }
+    }
+  };
+}
+
+function buildCodexMarketplace() {
+  return {
+    name: "dartsnut",
+    interface: {
+      displayName: "Dartsnut"
+    },
+    plugins: [
+      {
+        name: "dartsnut-agent",
+        source: {
+          source: "local",
+          path: "./plugins/dartsnut-agent"
+        },
+        policy: {
+          installation: "AVAILABLE",
+          authentication: "ON_INSTALL"
+        },
+        category: "Developer Tools"
+      }
+    ]
+  };
+}
+
+function buildClaudeMarketplace() {
+  return {
+    name: "dartsnut",
+    owner: {
+      name: "Dartsnut"
+    },
+    plugins: [
+      {
+        name: "dartsnut-agent",
+        source: "./plugins/dartsnut-agent",
+        description: "Dartsnut agent skills and firmware bridge."
+      }
+    ]
+  };
+}
+
+function buildReadme() {
+  return `# Dartsnut Agent Plugin
+
+This plugin is generated from \`src-tauri/resources/skills\`.
+
+Do not edit generated skill files directly. Update the source Markdown files and run:
+
+\`\`\`bash
+pnpm run export:agent-plugin
+\`\`\`
+
+## Components
+
+- Codex manifest: \`.codex-plugin/plugin.json\`
+- Claude manifest: \`.claude-plugin/plugin.json\`
+- Skills: \`skills/<skill-id>/SKILL.md\`
+- Firmware MCP server config: \`.mcp.json\`
+
+## Firmware MCP server
+
+The plugin includes an MCP server named \`dartsnut-firmware\`. Before starting
+the agent, set \`DARTSNUT_MACHINE_URL\` to the base URL of the Dartsnut machine
+you want to control. Use the Dartsnut machine IP address:
+
+\`\`\`bash
+export DARTSNUT_MACHINE_URL=http://192.168.1.42:9252
+\`\`\`
+
+The MCP endpoint is resolved as \`\${DARTSNUT_MACHINE_URL}/mcp\`.
+`;
+}
+
+function validateSourceSkills() {
+  for (const skillId of exportedSkills) {
+    const sourcePath = path.join(sourceSkillsDir, `${skillId}.md`);
+    if (!fs.existsSync(sourcePath)) {
+      throw new Error(`Missing source skill: ${path.relative(repoRoot, sourcePath)}`);
+    }
+  }
+}
+
+function generateInto(rootDir, codexMarketplaceFile, claudeMarketplaceFile) {
+  rimraf(rootDir);
+
+  for (const skillId of exportedSkills) {
+    const sourcePath = path.join(sourceSkillsDir, `${skillId}.md`);
+    const body = normalizeSkillBody(skillId, readText(sourcePath));
+    writeText(path.join(rootDir, "skills", skillId, "SKILL.md"), `${body}\n`);
+  }
+
+  writeJson(path.join(rootDir, ".codex-plugin", "plugin.json"), buildCodexManifest());
+  writeJson(path.join(rootDir, ".claude-plugin", "plugin.json"), buildClaudeManifest());
+  writeJson(path.join(rootDir, ".mcp.json"), buildMcpConfig());
+  writeText(path.join(rootDir, "README.md"), buildReadme());
+
+  writeJson(codexMarketplaceFile, buildCodexMarketplace());
+  writeJson(claudeMarketplaceFile, buildClaudeMarketplace());
+}
+
+function listFiles(dirPath) {
+  const files = [];
+  if (!fs.existsSync(dirPath)) {
+    return files;
+  }
+
+  const walk = (current) => {
+    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+      const entryPath = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        walk(entryPath);
+      } else {
+        files.push(path.relative(dirPath, entryPath).replace(/\\/g, "/"));
+      }
+    }
+  };
+
+  walk(dirPath);
+  files.sort((a, b) => a.localeCompare(b));
+  return files;
+}
+
+function compareDirs(expectedDir, actualDir) {
+  const expectedFiles = listFiles(expectedDir);
+  const actualFiles = listFiles(actualDir);
+  const diffs = [];
+
+  for (const file of new Set([...expectedFiles, ...actualFiles])) {
+    const expectedPath = path.join(expectedDir, file);
+    const actualPath = path.join(actualDir, file);
+    const expectedExists = fs.existsSync(expectedPath);
+    const actualExists = fs.existsSync(actualPath);
+    if (!expectedExists || !actualExists) {
+      diffs.push(file);
+      continue;
+    }
+    if (readText(expectedPath) !== readText(actualPath)) {
+      diffs.push(file);
+    }
+  }
+
+  return diffs;
+}
+
+function runCheck() {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "dartsnut-agent-plugin-"));
+  const expectedPluginRoot = path.join(tempRoot, "plugins", "dartsnut-agent");
+  const expectedCodexMarketplace = path.join(tempRoot, ".agents", "plugins", "marketplace.json");
+  const expectedClaudeMarketplace = path.join(tempRoot, ".claude-plugin", "marketplace.json");
+
+  try {
+    generateInto(expectedPluginRoot, expectedCodexMarketplace, expectedClaudeMarketplace);
+    const pluginDiffs = compareDirs(expectedPluginRoot, pluginRoot);
+    const marketplaceDiffs = [];
+
+    if (!fs.existsSync(codexMarketplacePath) || readText(codexMarketplacePath) !== readText(expectedCodexMarketplace)) {
+      marketplaceDiffs.push(path.relative(repoRoot, codexMarketplacePath));
+    }
+    if (!fs.existsSync(claudeMarketplacePath) || readText(claudeMarketplacePath) !== readText(expectedClaudeMarketplace)) {
+      marketplaceDiffs.push(path.relative(repoRoot, claudeMarketplacePath));
+    }
+
+    if (pluginDiffs.length > 0 || marketplaceDiffs.length > 0) {
+      const changed = [
+        ...pluginDiffs.map((file) => path.posix.join("plugins/dartsnut-agent", file)),
+        ...marketplaceDiffs
+      ];
+      throw new Error(`Generated plugin is stale:\n${changed.map((file) => `- ${file}`).join("\n")}`);
+    }
+  } finally {
+    rimraf(tempRoot);
+  }
+}
+
+validateSourceSkills();
+
+if (checkOnly) {
+  runCheck();
+  console.log("Dartsnut agent plugin export is up to date.");
+} else {
+  generateInto(pluginRoot, codexMarketplacePath, claudeMarketplacePath);
+  console.log("Exported Dartsnut agent plugin.");
+}

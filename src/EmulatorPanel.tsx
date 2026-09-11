@@ -1,0 +1,1187 @@
+import { useEffect, useRef, useState, type MouseEvent } from "react";
+import { Camera, List, LoaderCircle, RotateCw, Square, Video, Volume2, VolumeX, X, ZoomIn } from "lucide-react";
+import type { DeployFrameEvent, ProjectType, WidgetConfigSnapshot, WidgetFieldValues } from "@dartsnut/desktop-contracts";
+import {
+  createHiddenVenvPrepDisplay,
+  nextVenvPrepDisplay,
+  nextFrameRenderGeneration,
+  shouldRenderFrameGeneration,
+  VENV_PREP_STATUS_HOLD_MS,
+  VENV_PREP_STATUS_PREFIX,
+  type EmulatorFrame,
+  type EmulatorLogEntry,
+  type EmulatorStateSnapshot,
+  type VenvPrepDisplay,
+} from "@dartsnut/emulator-protocol";
+import { cn } from "./cn";
+import { DART_LEGEND_INDEXES, resolveDartShortcut } from "./emulatorDarts";
+import {
+  CAPTURE_ZOOMS,
+  captureOutputSizes,
+  formatRecordingElapsed,
+  type CaptureMode,
+  type CaptureZoom,
+} from "./emulatorCapture";
+import {
+  canStartOrReloadEmulator,
+  isRunningProcessWorkspaceMismatch,
+  isWidgetConfigForWorkspace,
+  resolveEmulatorProjectType,
+  shouldShowWidgetParams,
+} from "./emulatorProjectUi";
+import { applyWidgetParamsAndReload, type WidgetValueStore } from "./widgetParams";
+import { WidgetParamsEditor } from "./WidgetParamsEditor";
+import { tauriClient } from "./lib/tauriClient";
+
+type DartCoord = { x: number; y: number } | null;
+type UiEmulatorLogEntry = EmulatorLogEntry & { id: string };
+type PendingFrameJob = EmulatorFrame & { generation: number };
+type WorkerFrameResult = {
+  bitmap?: ImageBitmap;
+  width?: number;
+  height?: number;
+  generation?: number;
+  sequence?: number;
+  kind?: string;
+};
+
+const defaultState: EmulatorStateSnapshot = {
+  widgetPath: null,
+  running: false,
+  fps: 0,
+  status: "Idle",
+  audioMuted: false,
+  gifRecording: false,
+  gifSaving: false,
+  gifElapsedMs: 0,
+};
+
+const DART_COLORS = Array.from({ length: 12 }, (_, idx) => {
+  const cycle = idx % 4;
+  if (cycle === 0) return "#003cff";
+  if (cycle === 1) return "#ff0000";
+  if (cycle === 2) return "#00ff00";
+  return "#ffd800";
+});
+
+const emuToolbarBtn = "ui-toolbar-btn";
+
+const emuToolbarIconBtn = cn(emuToolbarBtn, "ui-toolbar-icon-btn");
+
+const BRIDGE_DEBUG_PREFIX = "[bridge]";
+
+function isBridgeDebugStdout(entry: UiEmulatorLogEntry): boolean {
+  return entry.source === "stdout" && entry.text.trimStart().startsWith(BRIDGE_DEBUG_PREFIX);
+}
+
+function isEmulatorStoppedWithError(state: EmulatorStateSnapshot): boolean {
+  if (state.running) {
+    return false;
+  }
+  if (state.lastError?.trim()) {
+    return true;
+  }
+  const s = state.status;
+  return s === "Bridge error" || s === "Command failed";
+}
+
+export type EmulatorPanelProps = {
+  workspacePath: string;
+  workspaceProjectType: ProjectType | null;
+  widgetConfig: WidgetConfigSnapshot;
+  widgetValuesByConfig: WidgetValueStore;
+  onWidgetValuesChange: (configKey: string, values: WidgetFieldValues) => void;
+  onEmulatorConfigChange: (snapshot: WidgetConfigSnapshot) => void;
+};
+
+export function EmulatorPanel({
+  workspacePath,
+  workspaceProjectType,
+  widgetConfig,
+  widgetValuesByConfig,
+  onWidgetValuesChange,
+  onEmulatorConfigChange,
+}: EmulatorPanelProps) {
+  const CANVAS_BASE_WIDTH = 588;
+  const CANVAS_BASE_HEIGHT = 800;
+  const [state, setState] = useState<EmulatorStateSnapshot>(defaultState);
+  const [selectedDartIndex, setSelectedDartIndex] = useState(0);
+  const [dartCoords, setDartCoords] = useState<DartCoord[]>(Array.from({ length: 12 }, () => null));
+  const [captureFps, setCaptureFps] = useState(0);
+  const [renderFps, setRenderFps] = useState(0);
+  const [zoomOpen, setZoomOpen] = useState(false);
+  const [captureDialog, setCaptureDialog] = useState<CaptureMode | null>(null);
+  const [captureZoom, setCaptureZoom] = useState<CaptureZoom>(4);
+  const [frameSize, setFrameSize] = useState<{ width: number; height: number } | null>(null);
+  const [logsOpen, setLogsOpen] = useState(false);
+  const [logsPaused, setLogsPaused] = useState(false);
+  const [emulatorLogs, setEmulatorLogs] = useState<UiEmulatorLogEntry[]>([]);
+  const [captureToast, setCaptureToast] = useState<string | null>(null);
+  const [captureFolder, setCaptureFolder] = useState<string | null>(null);
+  const [venvPrepDisplay, setVenvPrepDisplay] = useState<VenvPrepDisplay>(() => createHiddenVenvPrepDisplay());
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const zoomCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const logsBodyRef = useRef<HTMLDivElement | null>(null);
+  const frameWorkerRef = useRef<Worker | null>(null);
+  const workerBusyRef = useRef(false);
+  const pendingFrameRef = useRef<PendingFrameJob | null>(null);
+  const frameRenderGenerationRef = useRef(0);
+  const nextWorkerSequenceRef = useRef(0);
+  const activeWorkerSequenceRef = useRef<number | null>(null);
+  const latestFrameMetaRef = useRef<{ width: number; height: number } | null>(null);
+  const gridOverlayCacheRef = useRef<Map<string, HTMLCanvasElement>>(new Map());
+  const captureTimesRef = useRef<number[]>([]);
+  const renderTimesRef = useRef<number[]>([]);
+  const lastMetricsUpdateMsRef = useRef(0);
+  const backgroundRef = useRef<HTMLImageElement | null>(null);
+  const currentDartIndexRef = useRef<number>(0);
+  const lastRightClickMsRef = useRef<number>(0);
+  const zoomOpenRef = useRef(false);
+  const captureToastTimerRef = useRef<number | null>(null);
+  const lastCaptureToastStatusRef = useRef<string | null>(null);
+  const venvPrepDisplayRef = useRef<VenvPrepDisplay>(createHiddenVenvPrepDisplay());
+  const venvPrepHideTimerRef = useRef<number | null>(null);
+  const stateRef = useRef<EmulatorStateSnapshot>(defaultState);
+  const remoteSideloadActiveRef = useRef(false);
+  const normalizedWidgetType = state.widgetType?.toLowerCase() ?? null;
+  const activeProjectType = resolveEmulatorProjectType(
+    normalizedWidgetType,
+    state.running,
+    state.widgetPath,
+    workspaceProjectType,
+    workspacePath,
+  );
+  const configMatchesWorkspace = isWidgetConfigForWorkspace(widgetConfig.confPath, workspacePath);
+  const configMatchesRunningProcess =
+    state.running && isWidgetConfigForWorkspace(widgetConfig.confPath, state.widgetPath);
+  const configIsRelevant = state.running ? configMatchesRunningProcess : configMatchesWorkspace;
+  const showParamsPanel =
+    widgetConfig.status === "ready" &&
+    configIsRelevant &&
+    shouldShowWidgetParams(activeProjectType, widgetConfig.status);
+  const showDartLegend = activeProjectType === "game";
+  const runningProcessWorkspaceMismatch = isRunningProcessWorkspaceMismatch(
+    state.running,
+    state.widgetPath,
+    workspacePath,
+  );
+  const projectKindLabel =
+    activeProjectType === "widget" ? "Widget" : activeProjectType === "game" ? "Game" : "Unknown";
+  const stoppedWithError = isEmulatorStoppedWithError(state);
+  const venvPreparing = venvPrepDisplay.visible;
+  const venvPrepMessage = venvPrepDisplay.message;
+  const audioToggleLabel = state.audioMuted ? "Unmute emulator audio" : "Mute emulator audio";
+  const gifRecording = state.gifRecording === true;
+  const gifSaving = state.gifSaving === true;
+  const gifElapsed = formatRecordingElapsed(state.gifElapsedMs ?? 0);
+  const gifProgress = Math.min(1, Math.max(0, (state.gifElapsedMs ?? 0) / 30_000));
+  const canStartOrReload = canStartOrReloadEmulator(workspacePath);
+
+  useEffect(() => {
+    zoomOpenRef.current = zoomOpen;
+  }, [zoomOpen]);
+
+  useEffect(() => {
+    const body = logsBodyRef.current;
+    if (!logsOpen || logsPaused || !body) {
+      return;
+    }
+    body.scrollTop = body.scrollHeight;
+  }, [emulatorLogs, logsOpen, logsPaused]);
+
+  useEffect(() => {
+    return () => {
+      if (captureToastTimerRef.current !== null) {
+        window.clearTimeout(captureToastTimerRef.current);
+      }
+      if (venvPrepHideTimerRef.current !== null) {
+        window.clearTimeout(venvPrepHideTimerRef.current);
+      }
+    };
+  }, []);
+
+  /** Pixels match `drawFrameToCanvas` placement so the LCD area is black after reset. */
+  function fillEmulatorScreenBlack(
+    ctx: CanvasRenderingContext2D,
+    frame: { width: number; height: number } | null,
+    scaleMultiplier: number,
+  ) {
+    const sx = scaleMultiplier;
+    ctx.fillStyle = "#000000";
+    if (!frame) {
+      ctx.fillRect(38 * sx, 38 * sx, 512 * sx, 512 * sx);
+      ctx.fillRect(123 * sx, 601 * sx, 342 * sx, 176 * sx);
+      return;
+    }
+    if (frame.width === 128 && frame.height === 160) {
+      ctx.fillRect(38 * sx, 38 * sx, 512 * sx, 512 * sx);
+      ctx.fillRect(123 * sx, 601 * sx, 342 * sx, 176 * sx);
+    } else if (frame.width === 64 && frame.height === 32) {
+      ctx.fillRect(123 * sx, 601 * sx, 342 * sx, 176 * sx);
+    } else if (frame.width === 128 && frame.height === 128) {
+      ctx.fillRect(38 * sx, 38 * sx, 512 * sx, 512 * sx);
+    } else {
+      ctx.fillRect(38 * sx, 38 * sx, 512 * sx, 512 * sx);
+    }
+  }
+
+  /** Paint black under PixelDarts.png so transparent screen holes keep the asset's rounded corners. */
+  function paintCanvasBlackBase(ctx: CanvasRenderingContext2D, width: number, height: number) {
+    ctx.fillStyle = "#000000";
+    ctx.fillRect(0, 0, width, height);
+  }
+
+  function drawBackgroundOnly(
+    canvas: HTMLCanvasElement | null,
+    frameMeta: { width: number; height: number } | null = null,
+    scaleMultiplier = 1,
+  ) {
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.imageSmoothingEnabled = false;
+    paintCanvasBlackBase(ctx, canvas.width, canvas.height);
+    if (backgroundRef.current) {
+      ctx.drawImage(backgroundRef.current, 0, 0, canvas.width, canvas.height);
+      return;
+    }
+    fillEmulatorScreenBlack(ctx, frameMeta, scaleMultiplier);
+  }
+
+  /** Clear last frame and pending work so the preview does not show a stale capture after stop. */
+  function wipePreviewCanvas() {
+    const meta = latestFrameMetaRef.current;
+    frameRenderGenerationRef.current = nextFrameRenderGeneration(frameRenderGenerationRef.current);
+    activeWorkerSequenceRef.current = null;
+    pendingFrameRef.current = null;
+    latestFrameMetaRef.current = null;
+    setFrameSize(null);
+    workerBusyRef.current = false;
+    setDartCoords(Array.from({ length: 12 }, () => null));
+    drawBackgroundOnly(canvasRef.current, meta, 1);
+    drawBackgroundOnly(zoomCanvasRef.current, meta, 2);
+  }
+
+  function getGridOverlay(frameWidth: number, frameHeight: number, scaleMultiplier: number) {
+    const key = `${frameWidth}x${frameHeight}@${scaleMultiplier}`;
+    const cached = gridOverlayCacheRef.current.get(key);
+    if (cached) return cached;
+
+    const overlay = document.createElement("canvas");
+    overlay.width = CANVAS_BASE_WIDTH * scaleMultiplier;
+    overlay.height = CANVAS_BASE_HEIGHT * scaleMultiplier;
+    const g = overlay.getContext("2d");
+    if (!g) return null;
+    g.clearRect(0, 0, overlay.width, overlay.height);
+    g.fillStyle = "rgba(0, 0, 0, 0.20)";
+
+    const mainX = 38 * scaleMultiplier;
+    const mainY = 38 * scaleMultiplier;
+    const mainStep = 4 * scaleMultiplier;
+    const mainSize = 512 * scaleMultiplier;
+    for (let i = 0; i <= 128; i += 1) {
+      const x = mainX + i * mainStep;
+      const y = mainY + i * mainStep;
+      g.fillRect(x, mainY, 1, mainSize);
+      g.fillRect(mainX, y, mainSize, 1);
+    }
+
+    if ((frameWidth === 128 && frameHeight === 160) || (frameWidth === 64 && frameHeight === 32)) {
+      const secX = 123 * scaleMultiplier;
+      const secY = 601 * scaleMultiplier;
+      const secW = 342 * scaleMultiplier;
+      const secH = 176 * scaleMultiplier;
+      const stepX = secW / 64;
+      const stepY = secH / 32;
+      for (let i = 0; i <= 64; i += 1) {
+        const x = Math.round(secX + i * stepX);
+        g.fillRect(x, secY, 1, secH);
+      }
+      for (let i = 0; i <= 32; i += 1) {
+        const y = Math.round(secY + i * stepY);
+        g.fillRect(secX, y, secW, 1);
+      }
+    }
+    gridOverlayCacheRef.current.set(key, overlay);
+    return overlay;
+  }
+
+  function drawFrameToCanvas(
+    canvas: HTMLCanvasElement | null,
+    bitmap: ImageBitmap,
+    frame: { width: number; height: number },
+    scaleMultiplier = 1,
+  ) {
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.imageSmoothingEnabled = false;
+    paintCanvasBlackBase(ctx, canvas.width, canvas.height);
+    const sx = scaleMultiplier;
+    if (frame.width === 128 && frame.height === 160) {
+      ctx.drawImage(bitmap, 0, 0, 128, 128, 38 * sx, 38 * sx, 512 * sx, 512 * sx);
+      ctx.drawImage(bitmap, 0, 128, 64, 32, 123 * sx, 601 * sx, 342 * sx, 176 * sx);
+    } else if (frame.width === 64 && frame.height === 32) {
+      ctx.drawImage(bitmap, 0, 0, 64, 32, 123 * sx, 601 * sx, 342 * sx, 176 * sx);
+    } else if (frame.width === 128 && frame.height === 128) {
+      ctx.drawImage(bitmap, 0, 0, 128, 128, 38 * sx, 38 * sx, 512 * sx, 512 * sx);
+    } else {
+      ctx.drawImage(bitmap, 0, 0, frame.width, frame.height, 38 * sx, 38 * sx, 512 * sx, 512 * sx);
+    }
+    const overlay = getGridOverlay(frame.width, frame.height, scaleMultiplier);
+    if (overlay) {
+      ctx.drawImage(overlay, 0, 0, canvas.width, canvas.height);
+    }
+    if (backgroundRef.current) {
+      ctx.drawImage(backgroundRef.current, 0, 0, canvas.width, canvas.height);
+    }
+  }
+
+  function updateNormalizedFps(nowMs: number) {
+    const floor = nowMs - 1000;
+    captureTimesRef.current = captureTimesRef.current.filter((ts) => ts >= floor);
+    renderTimesRef.current = renderTimesRef.current.filter((ts) => ts >= floor);
+    if (nowMs - lastMetricsUpdateMsRef.current >= 250) {
+      setCaptureFps(captureTimesRef.current.length);
+      setRenderFps(renderTimesRef.current.length);
+      lastMetricsUpdateMsRef.current = nowMs;
+    }
+  }
+
+  function postFrameJob(job: PendingFrameJob) {
+    const worker = frameWorkerRef.current;
+    if (!worker) return;
+    const sequence = nextWorkerSequenceRef.current + 1;
+    nextWorkerSequenceRef.current = sequence;
+    activeWorkerSequenceRef.current = sequence;
+    workerBusyRef.current = true;
+    worker.postMessage({ ...job, sequence });
+  }
+
+  function postPendingFrameJob() {
+    const pending = pendingFrameRef.current;
+    if (!pending || !frameWorkerRef.current) return;
+    pendingFrameRef.current = null;
+    postFrameJob(pending);
+  }
+
+  useEffect(() => {
+    frameWorkerRef.current = new Worker(new URL("./frameWorker.ts", import.meta.url), { type: "module" });
+    frameWorkerRef.current.onmessage = (event: MessageEvent) => {
+      const data = event.data as WorkerFrameResult;
+      if (typeof data.sequence !== "number" || data.sequence !== activeWorkerSequenceRef.current) {
+        data.bitmap?.close();
+        return;
+      }
+      activeWorkerSequenceRef.current = null;
+      if (data && typeof data === "object" && data.kind === "workerNack") {
+        workerBusyRef.current = false;
+        postPendingFrameJob();
+        return;
+      }
+      const payload = data as Required<Pick<WorkerFrameResult, "bitmap" | "width" | "height" | "generation">>;
+      if (!shouldRenderFrameGeneration(payload.generation, frameRenderGenerationRef.current)) {
+        payload.bitmap.close();
+        workerBusyRef.current = false;
+        postPendingFrameJob();
+        return;
+      }
+      latestFrameMetaRef.current = { width: payload.width, height: payload.height };
+      setFrameSize((current) =>
+        current?.width === payload.width && current.height === payload.height
+          ? current
+          : { width: payload.width, height: payload.height }
+      );
+      drawFrameToCanvas(canvasRef.current, payload.bitmap, { width: payload.width, height: payload.height }, 1);
+      if (zoomOpenRef.current) {
+        drawFrameToCanvas(
+          zoomCanvasRef.current,
+          payload.bitmap,
+          { width: payload.width, height: payload.height },
+          2,
+        );
+      }
+      payload.bitmap.close();
+      const now = performance.now();
+      renderTimesRef.current.push(now);
+      updateNormalizedFps(now);
+      workerBusyRef.current = false;
+      postPendingFrameJob();
+    };
+
+    void (async () => {
+      const bg = await tauriClient.getEmulatorBackground();
+      if (bg?.url) {
+        const img = new Image();
+        img.src = bg.url;
+        img.onerror = () => {};
+        img.onload = () => {
+          backgroundRef.current = img;
+          const meta = latestFrameMetaRef.current;
+          drawBackgroundOnly(canvasRef.current, meta, 1);
+          if (zoomOpenRef.current) {
+            drawBackgroundOnly(zoomCanvasRef.current, meta, 2);
+          }
+        };
+      } else {
+        drawBackgroundOnly(canvasRef.current, latestFrameMetaRef.current, 1);
+      }
+    })();
+
+    const stopState = tauriClient.onEmulatorState((nextState) => {
+      stateRef.current = nextState;
+      setState(nextState);
+      const nowMs = Date.now();
+      const nextPrepDisplay = nextVenvPrepDisplay(venvPrepDisplayRef.current, nextState.status, nowMs);
+      venvPrepDisplayRef.current = nextPrepDisplay;
+      setVenvPrepDisplay(nextPrepDisplay);
+      if (venvPrepHideTimerRef.current !== null) {
+        window.clearTimeout(venvPrepHideTimerRef.current);
+        venvPrepHideTimerRef.current = null;
+      }
+      if (nextPrepDisplay.visible && !nextState.status.startsWith(VENV_PREP_STATUS_PREFIX)) {
+        const hideDelayMs = Math.max(0, (nextPrepDisplay.observedAtMs ?? nowMs) + VENV_PREP_STATUS_HOLD_MS - nowMs);
+        venvPrepHideTimerRef.current = window.setTimeout(() => {
+          const hidden = createHiddenVenvPrepDisplay();
+          venvPrepDisplayRef.current = hidden;
+          setVenvPrepDisplay(hidden);
+          venvPrepHideTimerRef.current = null;
+        }, hideDelayMs);
+      }
+      if (!remoteSideloadActiveRef.current && !nextState.running && nextState.widgetPath == null) {
+        wipePreviewCanvas();
+      }
+      const isCaptureComplete =
+        typeof nextState.status === "string" &&
+        (nextState.status.startsWith("Screenshot captured: ") || nextState.status.startsWith("GIF recorded: "));
+      if (isCaptureComplete && lastCaptureToastStatusRef.current !== nextState.status) {
+        lastCaptureToastStatusRef.current = nextState.status;
+        setCaptureToast(nextState.status);
+        setCaptureFolder(nextState.lastCapturePath || null);
+        if (captureToastTimerRef.current !== null) {
+          window.clearTimeout(captureToastTimerRef.current);
+        }
+        captureToastTimerRef.current = window.setTimeout(() => {
+          setCaptureToast(null);
+          setCaptureFolder(null);
+          captureToastTimerRef.current = null;
+        }, 3500);
+      }
+    });
+
+    const stopFrame = tauriClient.onEmulatorFrame((frame: EmulatorFrame) => {
+      if (remoteSideloadActiveRef.current || stateRef.current.widgetPath == null) {
+        return;
+      }
+      const now = performance.now();
+      captureTimesRef.current.push(now);
+      updateNormalizedFps(now);
+      if (!frameWorkerRef.current) return;
+      const job: PendingFrameJob = {
+        ...frame,
+        generation: frameRenderGenerationRef.current,
+      };
+      if (workerBusyRef.current) {
+        pendingFrameRef.current = job;
+        return;
+      }
+      postFrameJob(job);
+    });
+
+    const stopDeployFrame = tauriClient.onDeployFrame?.((event: DeployFrameEvent) => {
+      remoteSideloadActiveRef.current = event.active;
+      if (!event.active) {
+        if (!stateRef.current.running) wipePreviewCanvas();
+        return;
+      }
+      const now = performance.now();
+      captureTimesRef.current.push(now);
+      updateNormalizedFps(now);
+      if (!frameWorkerRef.current) return;
+      const job: PendingFrameJob = {
+        ...event.frame,
+        generation: frameRenderGenerationRef.current,
+      };
+      if (workerBusyRef.current) {
+        pendingFrameRef.current = job;
+        return;
+      }
+      postFrameJob(job);
+    });
+
+    const stopLog = tauriClient.onEmulatorLog((entry: EmulatorLogEntry) => {
+      if (typeof entry?.text !== "string") {
+        return;
+      }
+      if (entry.text.startsWith("[python-setup]")) {
+        return;
+      }
+      if (logsPaused) return;
+      const logEntry: UiEmulatorLogEntry = {
+        ...entry,
+        id: `${entry.timestampMs}-${Math.random().toString(16).slice(2, 8)}`,
+      };
+      setEmulatorLogs((prev) => {
+        const next = [...prev, logEntry];
+        return next.length > 800 ? next.slice(next.length - 800) : next;
+      });
+    });
+
+    return () => {
+      stopState();
+      stopFrame();
+      stopDeployFrame?.();
+      stopLog();
+      frameWorkerRef.current?.terminate();
+      frameWorkerRef.current = null;
+    };
+  }, [logsPaused]);
+
+  useEffect(() => {
+    const stopSessionReset = tauriClient.onSessionReset(() => {
+      setEmulatorLogs([]);
+      wipePreviewCanvas();
+    });
+    const stopLogsClear = tauriClient.onEmulatorLogsClear?.(() => {
+      setEmulatorLogs([]);
+    });
+    return () => {
+      stopSessionReset();
+      stopLogsClear?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!zoomOpen) return;
+    const latest = latestFrameMetaRef.current;
+    if (latest) {
+      const canvas = zoomCanvasRef.current;
+      if (canvas && canvasRef.current) {
+        const ctx = canvas.getContext("2d");
+        if (ctx) {
+          ctx.imageSmoothingEnabled = false;
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+          ctx.drawImage(canvasRef.current, 0, 0, canvas.width, canvas.height);
+          const overlay = getGridOverlay(latest.width, latest.height, 2);
+          if (overlay) {
+            ctx.drawImage(overlay, 0, 0, canvas.width, canvas.height);
+          }
+        }
+      }
+    } else {
+      drawBackgroundOnly(zoomCanvasRef.current, null, 2);
+    }
+  }, [zoomOpen]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA")) return;
+      if (event.repeat) return;
+      const key = event.key.toLowerCase();
+      const buttonMap: Record<string, "A" | "B" | "UP" | "DOWN" | "LEFT" | "RIGHT"> = {
+        k: "A",
+        l: "B",
+        w: "UP",
+        s: "DOWN",
+        a: "LEFT",
+        d: "RIGHT",
+      };
+      if (buttonMap[key]) {
+        void tauriClient.sendEmulatorCommand({
+          type: "set_button",
+          button: buttonMap[key],
+          pressed: true,
+        });
+      }
+      const dartIndex = resolveDartShortcut(event.key, stateRef.current.widgetType);
+      if (dartIndex !== null) {
+        event.preventDefault();
+        currentDartIndexRef.current = dartIndex;
+        setSelectedDartIndex(dartIndex);
+      }
+    };
+    const onKeyUp = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA")) return;
+      const key = event.key.toLowerCase();
+      const buttonMap: Record<string, "A" | "B" | "UP" | "DOWN" | "LEFT" | "RIGHT"> = {
+        k: "A",
+        l: "B",
+        w: "UP",
+        s: "DOWN",
+        a: "LEFT",
+        d: "RIGHT",
+      };
+      if (buttonMap[key]) {
+        void tauriClient.sendEmulatorCommand({
+          type: "set_button",
+          button: buttonMap[key],
+          pressed: false,
+        });
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+    };
+  }, []);
+
+  async function applyWidgetPathAndReload(nextPath: string) {
+    setEmulatorLogs([]);
+    await tauriClient.sendEmulatorCommand({ type: "set_path", path: nextPath });
+    await tauriClient.sendEmulatorCommand({ type: "reload_widget" });
+    try {
+      const nextConfig = await tauriClient.getWidgetConfig("emulator");
+      onEmulatorConfigChange(nextConfig);
+    } catch {
+      // Emulator state still reports reload failures.
+    }
+    setDartCoords(Array.from({ length: 12 }, () => null));
+  }
+
+  async function applyParamsAndReload() {
+    await applyWidgetParamsAndReload({
+      config: widgetConfig,
+      store: widgetValuesByConfig,
+      onAfterApply: () => {
+        setEmulatorLogs([]);
+        setDartCoords(Array.from({ length: 12 }, () => null));
+      },
+    });
+  }
+
+  function openCaptureDialog(mode: CaptureMode) {
+    setCaptureZoom(mode === "gif" ? 4 : 1);
+    setCaptureDialog(mode);
+  }
+
+  async function confirmCapture() {
+    const mode = captureDialog;
+    if (!mode) return;
+    setCaptureDialog(null);
+    if (mode === "screenshot") {
+      await tauriClient.sendEmulatorCommand({ type: "capture_screenshot", zoom: captureZoom });
+      return;
+    }
+    await tauriClient.sendEmulatorCommand({ type: "start_gif_recording", zoom: captureZoom });
+  }
+
+  function toCanvasCoord(event: MouseEvent<HTMLCanvasElement>) {
+    const canvas = canvasRef.current;
+    if (!canvas) return null;
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    const x = Math.floor((event.clientX - rect.left) * scaleX);
+    const y = Math.floor((event.clientY - rect.top) * scaleY);
+    return { x, y };
+  }
+
+  function toDartCoord(x: number, y: number) {
+    const DART_OFFSET_X = 38;
+    const DART_OFFSET_Y = 38;
+    const SCALE_FACTOR = 4;
+    const DART_COORD_SCALE = 299;
+    const DART_COORD_OFFSET = 1800;
+    if (x < DART_OFFSET_X || x > DART_OFFSET_X + 512 || y < DART_OFFSET_Y || y > DART_OFFSET_Y + 512) {
+      return null;
+    }
+    const boardX = Math.floor((x - DART_OFFSET_X) / SCALE_FACTOR);
+    const boardY = Math.floor((y - DART_OFFSET_Y) / SCALE_FACTOR);
+    return {
+      x: boardX * DART_COORD_SCALE + DART_COORD_OFFSET,
+      y: boardY * DART_COORD_SCALE + DART_COORD_OFFSET,
+    };
+  }
+
+  return (
+    <section className="flex h-full min-h-0 flex-col bg-[var(--color-emulator-bg)] text-[var(--color-emulator-text)]">
+      <div className="relative flex min-h-0 flex-1 flex-col items-stretch justify-start gap-0 overflow-hidden p-0 text-[var(--color-emulator-canvas-hint)]">
+        {runningProcessWorkspaceMismatch ? (
+          <div
+            className={cn(
+              "absolute inset-x-3 z-30 mx-auto flex max-w-[440px] items-center gap-3 rounded-lg border border-[rgba(245,158,11,0.42)] bg-[rgba(245,158,11,0.10)] px-3 py-2 text-[var(--color-warning-text)] shadow-lg backdrop-blur-sm",
+              gifRecording || gifSaving ? "top-14" : "top-3",
+            )}
+            role="alert"
+          >
+            <span className="min-w-0 flex-1 text-xs">Emulator is running a different workspace.</span>
+            <button
+              type="button"
+              className="shrink-0 rounded-md border border-[rgba(245,158,11,0.5)] bg-[rgba(245,158,11,0.14)] px-2 py-1 text-[11px] font-medium text-[var(--color-warning-text)] transition-colors hover:bg-[rgba(245,158,11,0.24)] disabled:cursor-not-allowed disabled:opacity-50"
+              disabled={!canStartOrReload}
+              onClick={() => void applyWidgetPathAndReload(workspacePath)}
+            >
+              Reload current workspace
+            </button>
+          </div>
+        ) : null}
+        {gifRecording || gifSaving ? (
+          <div
+            className="absolute inset-x-0 top-0 z-20 flex h-11 items-center border-b border-[var(--color-emulator-border)] bg-[color-mix(in_srgb,var(--color-emulator-bg)_94%,black)] shadow-sm"
+            role="status"
+            aria-live="polite"
+          >
+            <div className="mx-auto flex w-full max-w-[440px] min-w-0 items-center gap-3 px-3">
+              {gifSaving ? (
+                <>
+                  <LoaderCircle size={15} className="shrink-0 animate-spin text-[var(--color-accent)]" aria-hidden />
+                  <span className="min-w-0 flex-1 truncate text-xs font-medium text-[var(--color-text-strong)]">
+                    Saving GIF
+                  </span>
+                </>
+              ) : (
+                <>
+                  <span className="flex shrink-0 items-center gap-1.5 font-mono text-[10px] font-bold text-red-500">
+                    <span className="size-1.5 rounded-full bg-red-500 motion-safe:animate-pulse" aria-hidden />
+                    REC
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-baseline justify-between gap-3 font-mono text-[11px] tabular-nums">
+                      <span className="font-semibold text-[var(--color-text-strong)]">{gifElapsed}</span>
+                      <span className="text-[var(--color-text-subtle)]">00:30</span>
+                    </div>
+                    <div className="mt-1 h-0.5 overflow-hidden bg-[var(--color-zoom-popover-border)]">
+                      <div
+                        className="h-full bg-red-500 transition-[width] duration-200 ease-linear"
+                        style={{ width: `${gifProgress * 100}%` }}
+                      />
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    className={cn(emuToolbarIconBtn, "pointer-events-auto size-7 border-red-500/45 text-red-500 hover:bg-red-500/15")}
+                    onClick={() => void tauriClient.sendEmulatorCommand({ type: "stop_gif_recording" })}
+                    aria-label="Stop GIF recording"
+                    title="Stop GIF recording"
+                  >
+                    <Square size={12} fill="currentColor" aria-hidden />
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        ) : null}
+        <div className="box-border flex min-h-0 min-w-0 w-full flex-1 flex-row items-center justify-center gap-2 overflow-hidden p-0">
+          <div className="flex shrink-0 flex-col items-center gap-2 p-2">
+            <div className="emulator-canvas-frame relative">
+            <canvas
+              ref={canvasRef}
+              className="block h-[400px] w-[294px] shrink-0 border-0 bg-black [image-rendering:pixelated]"
+              width={CANVAS_BASE_WIDTH}
+              height={CANVAS_BASE_HEIGHT}
+              onContextMenu={(e) => e.preventDefault()}
+              onMouseDown={(event) => {
+                const coord = toCanvasCoord(event);
+                if (!coord) return;
+                const dartCoord = toDartCoord(coord.x, coord.y);
+                if (!dartCoord) return;
+                if (event.button === 0) {
+                  const index = currentDartIndexRef.current;
+                  void tauriClient.sendEmulatorCommand({
+                    type: "throw_dart",
+                    index,
+                    x: dartCoord.x,
+                    y: dartCoord.y,
+                  });
+                  setDartCoords((prev) => {
+                    const next = [...prev];
+                    next[index] = { x: dartCoord.x, y: dartCoord.y };
+                    return next;
+                  });
+                } else if (event.button === 2) {
+                  const now = Date.now();
+                  if (now - lastRightClickMsRef.current < 500) {
+                    void tauriClient.sendEmulatorCommand({ type: "clear_darts" });
+                    setDartCoords(Array.from({ length: 12 }, () => null));
+                    lastRightClickMsRef.current = now;
+                    return;
+                  }
+                  const selectedIndex = currentDartIndexRef.current;
+                  setDartCoords((prev) => {
+                    const selected = prev[selectedIndex];
+                    if (!selected) return prev;
+                    void tauriClient.sendEmulatorCommand({
+                      type: "remove_dart_at",
+                      x: selected.x,
+                      y: selected.y,
+                    });
+                    const next = [...prev];
+                    next[selectedIndex] = null;
+                    return next;
+                  });
+                  lastRightClickMsRef.current = now;
+                }
+              }}
+            />
+            {venvPreparing ? (
+              <div
+                className="pointer-events-none absolute inset-x-0 bottom-0 z-10 flex items-center gap-2 border-t border-white/10 bg-black/80 px-3 py-2 text-[11px] text-white/95"
+                role="status"
+                aria-live="polite"
+              >
+                <span
+                  className="inline-block size-3 shrink-0 rounded-full border-2 border-white/25 border-t-white/90"
+                  style={{ animation: "composer-send-spin 0.75s linear infinite" }}
+                  aria-hidden
+                />
+                <span className="min-w-0 truncate">{venvPrepMessage}</span>
+              </div>
+            ) : null}
+            </div>
+            <div className="box-border m-0 flex w-full max-w-[310px] shrink-0 flex-row items-center justify-center gap-2.5 self-stretch px-1 pb-1 pt-0.5 text-center text-[11px] tabular-nums text-[var(--color-state-line)]">
+              {venvPreparing ? (
+                <span className="truncate">{venvPrepMessage}</span>
+              ) : state.running ? (
+                <span>Running</span>
+              ) : stoppedWithError ? (
+                <span className="font-medium text-[var(--color-error-text)]" title={state.lastError?.trim() || state.status}>
+                  Error
+                </span>
+              ) : (
+                <span>Stopped</span>
+              )}
+              <span>{projectKindLabel}</span>
+              <span>FPS C{captureFps} / R{renderFps}</span>
+            </div>
+          </div>
+          <div
+            className="flex shrink-0 flex-col flex-nowrap items-center justify-start gap-1.5 border-t-0 p-0 [app-region:no-drag] [-webkit-app-region:no-drag]"
+            role="toolbar"
+            aria-label="Emulator actions"
+          >
+            <button
+              type="button"
+              className={emuToolbarIconBtn}
+              disabled={!canStartOrReload}
+              onClick={() => void applyWidgetPathAndReload(workspacePath)}
+              aria-label="Start or reload"
+              data-analytics-id="emulator_start_reload"
+              data-analytics-area="emulator"
+              title="Start / Reload"
+            >
+              <RotateCw size={16} aria-hidden />
+            </button>
+            <button
+              type="button"
+              className={emuToolbarIconBtn}
+              onClick={() => void tauriClient.sendEmulatorCommand({ type: "set_audio_muted", muted: !state.audioMuted })}
+              aria-label={audioToggleLabel}
+              data-analytics-id="emulator_audio_toggle"
+              data-analytics-area="emulator"
+              title={audioToggleLabel}
+            >
+              {state.audioMuted ? <VolumeX size={16} aria-hidden /> : <Volume2 size={16} aria-hidden />}
+            </button>
+            <button
+              type="button"
+              className={emuToolbarIconBtn}
+              disabled={!frameSize}
+              onClick={() => openCaptureDialog("screenshot")}
+              aria-label="Capture screenshot"
+              data-analytics-id="emulator_capture"
+              data-analytics-area="emulator"
+              title={
+                normalizedWidgetType === "widget"
+                  ? "Capture device mockup and widget surface"
+                  : "Capture screenshot"
+              }
+            >
+              <Camera size={16} aria-hidden />
+            </button>
+            <button
+              type="button"
+              className={cn(
+                emuToolbarIconBtn,
+                gifRecording && "border-red-500/60 bg-red-500/20 text-red-500 hover:bg-red-500/25"
+              )}
+              disabled={gifSaving || (!gifRecording && !frameSize)}
+              onClick={() => {
+                if (gifRecording) {
+                  void tauriClient.sendEmulatorCommand({ type: "stop_gif_recording" });
+                } else {
+                  openCaptureDialog("gif");
+                }
+              }}
+              aria-label={gifSaving ? "Saving GIF" : gifRecording ? "Stop GIF recording" : "Record GIF"}
+              aria-pressed={gifRecording}
+              data-analytics-id="emulator_record_gif"
+              data-analytics-area="emulator"
+              title={gifSaving ? "Saving GIF" : gifRecording ? "Stop GIF recording" : "Record GIF"}
+            >
+              {gifSaving ? (
+                <LoaderCircle size={16} className="animate-spin" aria-hidden />
+              ) : gifRecording ? (
+                <Square size={14} fill="currentColor" aria-hidden />
+              ) : (
+                <Video size={16} aria-hidden />
+              )}
+            </button>
+            <button
+              type="button"
+              className={emuToolbarIconBtn}
+              onClick={() => setZoomOpen(true)}
+              aria-label="Zoom 2x"
+              data-analytics-id="emulator_zoom"
+              data-analytics-area="emulator"
+              title="Zoom 2x"
+            >
+              <ZoomIn size={16} aria-hidden />
+            </button>
+            <button
+              type="button"
+              className={emuToolbarIconBtn}
+              onClick={() => setLogsOpen((prev) => !prev)}
+              aria-label={logsOpen ? "Hide Python logs" : "Show Python logs"}
+              data-analytics-id="emulator_logs_toggle"
+              data-analytics-area="emulator"
+              title={logsOpen ? "Hide logs" : "Logs"}
+            >
+              <List size={16} aria-hidden />
+            </button>
+          </div>
+        </div>
+        {showParamsPanel ? (
+          <div className="mx-3.5 mb-3.5 mt-0">
+            <WidgetParamsEditor
+              config={widgetConfig}
+              store={widgetValuesByConfig}
+              onValuesChange={onWidgetValuesChange}
+              onApplyReload={applyParamsAndReload}
+            />
+          </div>
+        ) : null}
+        {showDartLegend ? (
+          <div
+            className="mb-3.5 box-border grid w-full shrink-0 grid-cols-6 justify-items-center gap-2 px-2 pb-2"
+            aria-label="Dart indexes"
+          >
+            {DART_LEGEND_INDEXES.map((idx, legendIndex) => {
+              const color = DART_COLORS[idx];
+              const isSelected = idx === selectedDartIndex;
+              const isPlaced = dartCoords[idx] !== null;
+              const useLightText = idx % 4 === 0 || idx % 4 === 1;
+              return (
+                <button
+                  type="button"
+                  key={`dart-${idx + 1}`}
+                  className={cn(
+                    "box-border inline-flex size-[30px] cursor-pointer items-center justify-center justify-self-center rounded-full border border-[var(--color-dart-dot-border)] p-0 text-[11px] font-semibold opacity-35 [image-rendering:pixelated]",
+                    useLightText ? "text-[var(--color-dart-dot-fg-light)]" : "text-[var(--color-dart-dot-fg)]",
+                    isPlaced && "opacity-100",
+                    isSelected && "outline outline-2 outline-offset-2 outline-[var(--color-text-strong)]"
+                  )}
+                  style={{ backgroundColor: color }}
+                  title={`F${legendIndex + 1}${isPlaced ? " • placed" : " • not placed"}${isSelected ? " • selected" : ""}`}
+                  onClick={() => {
+                    currentDartIndexRef.current = idx;
+                    setSelectedDartIndex(idx);
+                  }}
+                >
+                  {idx + 1}
+                </button>
+              );
+            })}
+          </div>
+        ) : null}
+        {captureToast ? (
+          <div className="absolute bottom-4 left-1/2 z-10 flex max-w-[calc(100%-24px)] -translate-x-1/2 items-stretch overflow-hidden rounded-lg bg-[var(--color-toast-backdrop)] text-xs text-[var(--color-toast-text)]">
+            <div className="flex items-center px-3 py-2">
+              <span>{captureToast}</span>
+            </div>
+            {captureFolder && (
+              <>
+                <div className="w-px bg-[var(--color-toast-border)]"></div>
+                <button
+                  type="button"
+                  className="flex items-center rounded-r-lg border-0 bg-transparent px-3 outline-none transition-colors hover:bg-[rgba(0,0,0,0.15)] active:bg-[rgba(0,0,0,0.25)]"
+                  onClick={() => {
+                    if (captureFolder) {
+                      tauriClient.openCaptureFolder(captureFolder);
+                    }
+                  }}
+                >
+                  Show in Folder
+                </button>
+              </>
+            )}
+          </div>
+        ) : null}
+      </div>
+      {zoomOpen ? (
+        <div
+          className="fixed inset-0 z-[2000] flex items-center justify-center bg-[var(--color-zoom-overlay)]"
+          onClick={() => setZoomOpen(false)}
+          role="presentation"
+        >
+          <div
+            className="flex max-h-[94vh] w-[min(96vw,1260px)] max-w-[96vw] flex-col overflow-hidden rounded-[10px] border border-[var(--color-zoom-popover-border)] bg-[var(--color-zoom-popover-bg)]"
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-label="Zoomed emulator"
+          >
+            <div className="flex items-center justify-between border-b border-[var(--color-zoom-popover-border)] px-3 py-2.5">
+              <strong>Emulator Zoom 2x</strong>
+              <button type="button" className={emuToolbarBtn} onClick={() => setZoomOpen(false)}>
+                Close
+              </button>
+            </div>
+            <canvas
+              ref={zoomCanvasRef}
+              className="mx-auto block max-h-[calc(94vh-52px)] max-w-full object-contain [image-rendering:pixelated]"
+              width={CANVAS_BASE_WIDTH * 2}
+              height={CANVAS_BASE_HEIGHT * 2}
+            />
+          </div>
+        </div>
+      ) : null}
+      {captureDialog ? (
+        <div
+          className="fixed inset-0 z-[2100] flex items-center justify-center bg-[var(--color-zoom-overlay)] p-4"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setCaptureDialog(null);
+          }}
+          role="presentation"
+        >
+          <div
+            className="w-full max-w-sm rounded-lg border border-[var(--color-zoom-popover-border)] bg-[var(--color-zoom-popover-bg)] shadow-[var(--shadow-md)]"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="capture-dialog-title"
+            onKeyDown={(event) => {
+              if (event.key === "Escape") setCaptureDialog(null);
+            }}
+          >
+            <div className="flex items-center justify-between border-b border-[var(--color-zoom-popover-border)] px-4 py-3">
+              <h2 id="capture-dialog-title" className="text-sm font-semibold">
+                {captureDialog === "gif" ? "Record GIF" : "Capture screenshot"}
+              </h2>
+              <button
+                type="button"
+                className={emuToolbarIconBtn}
+                onClick={() => setCaptureDialog(null)}
+                aria-label="Close"
+              >
+                <X size={16} aria-hidden />
+              </button>
+            </div>
+            <div className="space-y-4 p-4">
+              <div>
+                <div className="mb-2 text-xs font-medium text-[var(--color-text-subtle)]">Zoom</div>
+                <div className="grid grid-cols-3 overflow-hidden rounded-md border border-[var(--color-zoom-popover-border)]">
+                  {CAPTURE_ZOOMS.map((zoom) => (
+                    <button
+                      key={zoom}
+                      type="button"
+                      className={cn(
+                        "h-9 border-0 bg-transparent text-xs font-semibold text-[var(--color-emulator-text)] transition-colors",
+                        zoom !== 1 && "border-l border-l-[var(--color-zoom-popover-border)]",
+                        captureZoom === zoom && "bg-[var(--color-emulator-toolbar-bg-hover)] text-[var(--color-text-strong)]"
+                      )}
+                      aria-pressed={captureZoom === zoom}
+                      onClick={() => setCaptureZoom(zoom)}
+                    >
+                      {zoom}x
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="space-y-1.5" aria-live="polite">
+                {(frameSize ? captureOutputSizes(captureDialog, frameSize.width, frameSize.height, captureZoom) : []).map(
+                  (output) => (
+                    <div
+                      key={output.label}
+                      className="flex items-center justify-between text-xs text-[var(--color-text-subtle)]"
+                    >
+                      <span>{output.label}</span>
+                      <span className="font-mono tabular-nums text-[var(--color-text-strong)]">
+                        {output.width} x {output.height}
+                      </span>
+                    </div>
+                  )
+                )}
+              </div>
+              <div className="flex justify-end gap-2 pt-1">
+                <button type="button" className={emuToolbarBtn} onClick={() => setCaptureDialog(null)}>
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className={cn(emuToolbarBtn, "bg-[var(--color-accent)] text-white")}
+                  disabled={!frameSize}
+                  onClick={() => void confirmCapture()}
+                >
+                  {captureDialog === "gif" ? "Start recording" : "Capture"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      <div
+        className={cn(
+          "fixed left-0 top-0 z-[2200] flex h-screen w-[min(540px,90vw)] -translate-x-full flex-col border-r border-[var(--color-zoom-popover-border)] bg-[var(--color-input-bg)] transition-transform duration-[180ms] ease-out",
+          logsOpen && "translate-x-0"
+        )}
+        aria-hidden={!logsOpen}
+      >
+        <div className="flex items-center justify-between border-b border-[var(--color-zoom-popover-border)] px-3 pb-2.5 pt-6">
+          <strong>Python Logs</strong>
+          <div className="flex gap-2">
+            <button type="button" className={emuToolbarBtn} onClick={() => setLogsPaused((prev) => !prev)}>
+              {logsPaused ? "Resume" : "Pause"}
+            </button>
+            <button type="button" className={emuToolbarBtn} onClick={() => setEmulatorLogs([])}>
+              Clear
+            </button>
+            <button type="button" className={emuToolbarBtn} onClick={() => setLogsOpen(false)}>
+              Close
+            </button>
+          </div>
+        </div>
+        <div
+          className="flex-1 overflow-auto px-2.5 py-2 font-mono text-xs leading-snug [font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace]"
+          ref={logsBodyRef}
+        >
+          {emulatorLogs.length === 0 ? (
+            <div className="px-0.5 py-1.5 text-[var(--color-state-line)]">No logs yet.</div>
+          ) : (
+            emulatorLogs.map((entry) => {
+              const bridgeDebug = isBridgeDebugStdout(entry);
+              return (
+              <div
+                key={entry.id}
+                title={entry.source}
+                className={cn(
+                  "break-words border-l-[3px] py-1 pl-2 pr-0.5",
+                  entry.source === "stderr" && "border-l-[var(--color-log-stderr)]",
+                  entry.source === "stdout" &&
+                    !bridgeDebug &&
+                    "border-l-[var(--color-log-stdout)]",
+                  entry.source === "stdout" && bridgeDebug && "border-l-[var(--color-text-muted)]",
+                  entry.source !== "stderr" && entry.source !== "stdout" && "border-l-[var(--color-params-header)]"
+                )}
+              >
+                <span
+                  className={cn(
+                    "block min-w-0 whitespace-pre-wrap",
+                    entry.source === "stderr" && "text-[var(--color-log-stderr)]",
+                    entry.source === "stdout" && !bridgeDebug && "text-[var(--color-log-stdout)]",
+                    entry.source === "stdout" && bridgeDebug && "text-[var(--color-text-muted)]",
+                    entry.source !== "stderr" && entry.source !== "stdout" && "text-[var(--color-log-text)]"
+                  )}
+                >
+                  {entry.text}
+                </span>
+              </div>
+              );
+            })
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}

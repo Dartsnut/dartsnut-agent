@@ -1,0 +1,562 @@
+import { memo, useCallback, useEffect, useRef, useState } from "react";
+import type {
+  CommunityDeployDevice,
+  CommunitySessionInfo,
+  DeployConnectResponse,
+  DeployConnectionState,
+  DeployFrameEvent,
+  WidgetConfigSnapshot,
+  WidgetFieldValues
+} from "@dartsnut/desktop-contracts";
+import { isCommunityAuthSkippedForSession } from "./DeployAuthGate";
+import {
+  CommunityErrorSnackbar,
+  isCommunityAuthFailure,
+  shouldShowCommunityErrorSnackbar
+} from "./CommunityErrorSnackbar";
+import { applyWidgetParamsAndReload, resolveWidgetParams, type WidgetValueStore } from "./widgetParams";
+import { WidgetParamsEditor } from "./WidgetParamsEditor";
+import { tauriClient } from "./lib/tauriClient";
+
+const toolbarBtn = "ui-toolbar-btn";
+const MANUAL_DEVICE_VALUE = "__manual__";
+
+type ApiErrorSnackbarState = {
+  message: string;
+  detail?: string;
+};
+
+export type DeployPanelProps = {
+  active: boolean;
+  workspaceIdentity: string | null;
+  showWidgetParams: boolean;
+  widgetConfig: WidgetConfigSnapshot;
+  widgetValuesByConfig: WidgetValueStore;
+  onWidgetValuesChange: (configKey: string, values: WidgetFieldValues) => void;
+  communitySession: CommunitySessionInfo;
+  communitySessionVersion: number;
+  onCommunitySessionChange: () => Promise<void>;
+  onAuthRequired: () => void;
+};
+
+function formatDeviceOptionLabel(device: CommunityDeployDevice): string {
+  const parts = [device.name || device.deviceId];
+  if (device.ssid) {
+    parts.push(device.ssid);
+  }
+  if (device.ipAddress) {
+    parts.push(device.ipAddress);
+  } else {
+    parts.push("no IP");
+  }
+  return parts.join(" · ");
+}
+
+export const DeployPanel = memo(function DeployPanel({
+  active,
+  workspaceIdentity,
+  showWidgetParams,
+  widgetConfig,
+  widgetValuesByConfig,
+  onWidgetValuesChange,
+  communitySession,
+  communitySessionVersion,
+  onCommunitySessionChange,
+  onAuthRequired
+}: DeployPanelProps) {
+  const api = tauriClient;
+  const [host, setHost] = useState("");
+  const [deviceName, setDeviceName] = useState<string | null>(null);
+  const [connected, setConnected] = useState(false);
+  const [deployRunning, setDeployRunning] = useState(false);
+  const [deployMode, setDeployMode] = useState<"safe_sideload" | "legacy_unsafe" | null>(null);
+  const [lastError, setLastError] = useState<string | null>(null);
+  const [busyAction, setBusyAction] = useState<string | null>(null);
+  const [logLines, setLogLines] = useState<string[]>([]);
+  const logRef = useRef<HTMLPreElement | null>(null);
+  const [localNetworkRetryPrompt, setLocalNetworkRetryPrompt] = useState(false);
+  const [settingsOpenError, setSettingsOpenError] = useState<string | null>(null);
+  const connectionGenerationRef = useRef(0);
+  const previousWorkspaceIdentityRef = useRef(workspaceIdentity);
+
+  const [devices, setDevices] = useState<CommunityDeployDevice[]>([]);
+  const [devicesLoading, setDevicesLoading] = useState(false);
+  const [devicesError, setDevicesError] = useState<string | null>(null);
+  const [apiErrorSnackbar, setApiErrorSnackbar] = useState<ApiErrorSnackbarState | null>(null);
+  const [supabaseConfigured, setSupabaseConfigured] = useState(false);
+  const [selectedDeviceKey, setSelectedDeviceKey] = useState("");
+  const selectedDeviceKeyRef = useRef("");
+
+  const widgetParamsResolved = showWidgetParams ? resolveWidgetParams(widgetConfig, widgetValuesByConfig) : null;
+  const widgetParamActionsBlocked = Boolean(widgetParamsResolved && !widgetParamsResolved.ok);
+  const loggedIn = communitySession.loggedIn;
+  const manualIpMode =
+    !loggedIn || selectedDeviceKey === MANUAL_DEVICE_VALUE || selectedDeviceKey === "";
+  const selectedDevice =
+    selectedDeviceKey && selectedDeviceKey !== MANUAL_DEVICE_VALUE
+      ? devices.find((d) => d.deviceId === selectedDeviceKey) ?? null
+      : null;
+  const selectedMissingIp = Boolean(selectedDevice && !selectedDevice.ipAddress.trim());
+  const hostInputDisabled =
+    busyAction !== null || connected || (Boolean(selectedDevice?.ipAddress) && !manualIpMode);
+
+  const loadDevices = useCallback(async () => {
+    if (!active || !api.communityListDeployDevices || (!loggedIn && isCommunityAuthSkippedForSession())) {
+      setDevices([]);
+      setDevicesError(null);
+      setSupabaseConfigured(false);
+      return;
+    }
+    setDevicesLoading(true);
+    setDevicesError(null);
+    try {
+      const res = await api.communityListDeployDevices();
+      if (!res.ok) {
+        setDevices([]);
+        if (isCommunityAuthFailure(res)) {
+          await onCommunitySessionChange();
+          if (!isCommunityAuthSkippedForSession()) {
+            onAuthRequired();
+          }
+          setDevicesError(null);
+          setSupabaseConfigured(false);
+          return;
+        }
+        if (shouldShowCommunityErrorSnackbar(res)) {
+          setApiErrorSnackbar({
+            message: "Failed to load bound devices.",
+            detail: res.serverMessage?.trim()
+          });
+        }
+        return;
+      }
+      setDevices(res.devices);
+      setSupabaseConfigured(res.supabaseConfigured);
+      const currentSelectedDeviceKey = selectedDeviceKeyRef.current;
+      if (
+        currentSelectedDeviceKey &&
+        currentSelectedDeviceKey !== MANUAL_DEVICE_VALUE &&
+        !res.devices.some((d) => d.deviceId === currentSelectedDeviceKey)
+      ) {
+        selectedDeviceKeyRef.current = "";
+        setSelectedDeviceKey("");
+        setHost("");
+      }
+    } catch (e) {
+      setDevices([]);
+      setApiErrorSnackbar({ message: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setDevicesLoading(false);
+    }
+  }, [active, api, loggedIn, onAuthRequired, onCommunitySessionChange]);
+
+  useEffect(() => {
+    if (previousWorkspaceIdentityRef.current === workspaceIdentity) return;
+    previousWorkspaceIdentityRef.current = workspaceIdentity;
+    setLastError(null);
+    setLogLines([]);
+    setDeployRunning(false);
+    setBusyAction((action) => action === "connect" || action === "disconnect" ? action : null);
+    setSettingsOpenError(null);
+  }, [workspaceIdentity]);
+
+  useEffect(() => {
+    return api.onDeployConnectionChanged((state: DeployConnectionState) => {
+      setConnected(state.connected);
+      setHost(state.host ?? "");
+      if (!state.connected) setDeployRunning(false);
+      setDeviceName(state.connected ? state.deviceName : null);
+      setDeployMode(state.connected ? state.deployMode : null);
+      if (state.connecting) setBusyAction("connect");
+      // `deployConnect` tears down any previous session first, which emits a
+      // transient disconnected event. Keep the visible Connecting state until
+      // the connect request itself settles; only finish an explicit disconnect
+      // from the authoritative disconnected event.
+      if (!state.connected && !state.connecting) setBusyAction((action) => action === "disconnect" ? null : action);
+    });
+  }, [api]);
+
+  useEffect(() => {
+    void api.deployGetState().then((state) => {
+      setConnected(state.connected);
+      setHost(state.host ?? "");
+      if (!state.connected) setDeployRunning(false);
+      setDeviceName(state.connected ? state.deviceName : null);
+      setDeployMode(state.connected ? state.deployMode : null);
+      if (state.connecting) setBusyAction("connect");
+    }).catch(() => {
+      // Connection events remain authoritative if the initial snapshot fails.
+    });
+  }, [api]);
+
+  useEffect(() => {
+    return api.onDeployFrame((event: DeployFrameEvent) => {
+      setDeployRunning(event.active);
+    });
+  }, [api]);
+
+  useEffect(() => {
+    void loadDevices();
+  }, [loadDevices, communitySessionVersion]);
+
+  useEffect(() => {
+    selectedDeviceKeyRef.current = selectedDeviceKey;
+  }, [selectedDeviceKey]);
+
+  useEffect(() => {
+    return api.onDeployLog((line: string) => {
+      setLogLines((prev) => [...prev.slice(-499), line]);
+    });
+  }, [api]);
+
+  useEffect(() => {
+    const el = logRef.current;
+    if (!el) {
+      return;
+    }
+    el.scrollTop = el.scrollHeight;
+  }, [logLines]);
+
+  useEffect(() => {
+    if (manualIpMode || !selectedDevice) {
+      return;
+    }
+    const ip = selectedDevice.ipAddress.trim();
+    if (ip) {
+      setHost(ip);
+    }
+  }, [manualIpMode, selectedDevice]);
+
+  function handleDeviceSelectChange(value: string) {
+    selectedDeviceKeyRef.current = value;
+    setSelectedDeviceKey(value);
+    setLastError(null);
+    setLocalNetworkRetryPrompt(false);
+    setSettingsOpenError(null);
+    if (value === MANUAL_DEVICE_VALUE || value === "") {
+      return;
+    }
+    const device = devices.find((d) => d.deviceId === value);
+    if (device?.ipAddress.trim()) {
+      setHost(device.ipAddress.trim());
+    } else {
+      setHost("");
+    }
+  }
+
+  async function handleConnect() {
+    setLastError(null);
+    setSettingsOpenError(null);
+    setBusyAction("connect");
+    setDeviceName(null);
+    setConnected(false);
+    setDeployRunning(false);
+    setDeployMode(null);
+    const generation = ++connectionGenerationRef.current;
+    try {
+      const result: DeployConnectResponse = await api.deployConnect({ host });
+      if (!result.ok) {
+        if (generation !== connectionGenerationRef.current) return;
+        setLocalNetworkRetryPrompt(Boolean(result.needsLocalNetworkPermission));
+        setLastError(result.error);
+        return;
+      }
+      if (generation !== connectionGenerationRef.current) return;
+      setLocalNetworkRetryPrompt(false);
+      setConnected(true);
+      setDeviceName(result.deviceName ?? null);
+      setDeployMode(result.deployMode);
+    } catch (e) {
+      if (generation !== connectionGenerationRef.current) return;
+      setLocalNetworkRetryPrompt(false);
+      setLastError(e instanceof Error ? e.message : String(e));
+    } finally {
+      if (generation === connectionGenerationRef.current) {
+        setBusyAction(null);
+      }
+    }
+  }
+
+  async function handleDisconnect() {
+    setLastError(null);
+    setBusyAction("disconnect");
+    try {
+      const result = await api.deployDisconnect();
+      if (!result.ok) {
+        setLastError(result.error);
+        return;
+      }
+      setConnected(false);
+      setDeployRunning(false);
+      setDeviceName(null);
+      setDeployMode(null);
+    } catch (e) {
+      setLastError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function run(action: "run" | "stop") {
+    setLastError(null);
+    setBusyAction(action);
+    try {
+      const resolvedParams = action === "run" && showWidgetParams
+        ? resolveWidgetParams(widgetConfig, widgetValuesByConfig)
+        : null;
+      if (resolvedParams && !resolvedParams.ok) {
+        setLastError(resolvedParams.message);
+        return;
+      }
+      const launch = resolvedParams?.ok ? { widgetParamsJson: resolvedParams.json } : undefined;
+      const result = action === "run" ? await api.deployRun(launch) : await api.deployStop();
+      if (!result.ok) {
+        setLastError(result.error);
+      } else if (action === "run") {
+        setDeployRunning(true);
+      } else if (action === "stop") {
+        setDeployRunning(false);
+      }
+    } catch (e) {
+      setLastError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function handleApplyWidgetParams() {
+    const normalized = await applyWidgetParamsAndReload({
+      config: widgetConfig,
+      store: widgetValuesByConfig
+    });
+    if (normalized === undefined) {
+      return;
+    }
+    if (!connected || !showWidgetParams) {
+      return;
+    }
+    setLastError(null);
+    setBusyAction("reload");
+    try {
+      const result = await api.deployApplyWidgetParams({ widgetParamsJson: normalized });
+      if (!result.ok) {
+        setLastError(result.error);
+      }
+    } catch (e) {
+      setLastError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function handleOpenLocalNetworkSettings() {
+    setSettingsOpenError(null);
+    const result = await api.deployOpenLocalNetworkSettings();
+    if (!result.ok) {
+      setSettingsOpenError(result.error);
+    }
+  }
+
+  const canConnect = connected || host.trim().length > 0;
+  const showLocalNetworkBanner = localNetworkRetryPrompt;
+  const deployButtonLabel =
+    busyAction === "run"
+      ? "Running…"
+      : busyAction === "stop"
+        ? "Stopping…"
+        : deployRunning
+          ? "Stop"
+          : "Run";
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col gap-4 p-4">
+      <h2 className="ui-panel-title">Deploy</h2>
+
+      {showLocalNetworkBanner ? (
+        <div className="flex shrink-0 flex-col gap-2 rounded-lg border border-[rgba(245,158,11,0.42)] bg-[rgba(245,158,11,0.10)] px-3 py-2 text-[13px] text-[var(--color-text-primary)]">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="text-[var(--color-warning-text)]">
+              macOS may have shown a Local Network prompt. Allow Dartsnut Agent, then retry the connection.
+            </span>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                className={toolbarBtn}
+                disabled={busyAction !== null || !canConnect}
+                data-analytics-id="deploy_connect"
+                data-analytics-area="deploy"
+                onClick={() => void handleConnect()}
+              >
+                Retry Connect
+              </button>
+              <button
+                type="button"
+                className={toolbarBtn}
+                data-analytics-id="deploy_open_network_settings"
+                data-analytics-area="deploy"
+                onClick={() => void handleOpenLocalNetworkSettings()}
+              >
+                Open System Settings
+              </button>
+            </div>
+          </div>
+          <span className="text-xs text-[var(--color-text-subtle)]">
+            If it does not open directly, go to System Settings → Privacy &amp; Security → Local Network and enable Dartsnut Agent.
+          </span>
+          {settingsOpenError ? (
+            <span className="text-xs text-[var(--color-error-text)]">{settingsOpenError}</span>
+          ) : null}
+        </div>
+      ) : null}
+
+      {connected && deployMode === "legacy_unsafe" ? (
+        <div className="shrink-0 rounded-lg border border-[rgba(245,158,11,0.42)] bg-[rgba(245,158,11,0.10)] px-3 py-2 text-[13px] text-[var(--color-warning-text)]">
+          Legacy unsafe deploy. This firmware stops production service, writes to fixed pdoshm, and cannot recover through heartbeat. Update firmware for isolated sideload sessions.
+        </div>
+      ) : connected && deployMode === "safe_sideload" ? (
+        <div className="shrink-0 rounded-lg border border-edge bg-[var(--color-surface-elevated)] px-3 py-2 text-xs text-[var(--color-text-subtle)]">
+          Safe local sideload · production config and remote sync stay unchanged
+        </div>
+      ) : null}
+
+      {loggedIn ? (
+        <label className="flex shrink-0 flex-col gap-1.5 text-[13px]">
+          <span className="text-[var(--color-text-subtle)]">Bound device</span>
+          <select
+            className="ui-input"
+            value={selectedDeviceKey}
+            disabled={busyAction !== null || connected || devicesLoading}
+            onChange={(e) => handleDeviceSelectChange(e.target.value)}
+          >
+            <option value="">— Select a device —</option>
+            {devices.map((device) => (
+              <option key={device.deviceId} value={device.deviceId}>
+                {formatDeviceOptionLabel(device)}
+              </option>
+            ))}
+            <option value={MANUAL_DEVICE_VALUE}>Enter IP manually</option>
+          </select>
+          {devicesLoading ? (
+            <span className="text-xs text-[var(--color-text-subtle)]">Loading devices…</span>
+          ) : null}
+          {devicesError ? (
+            <span className="text-xs text-[var(--color-error-text)]">{devicesError}</span>
+          ) : null}
+          {!devicesLoading && !devices.length && !devicesError ? (
+            <span className="text-xs text-[var(--color-text-subtle)]">
+              No devices bound to this account yet.
+            </span>
+          ) : null}
+          {loggedIn && !supabaseConfigured && devices.length > 0 ? (
+            <span className="text-xs text-[var(--color-text-subtle)]">
+              Supabase is not configured in .env (DARTSNUT_SUPABASE_ANON_KEY); device names only, no
+              auto IP.
+            </span>
+          ) : null}
+          {selectedMissingIp ? (
+            <span className="text-xs text-[var(--color-error-text)]">
+              This device has not reported an IP yet. Enter an IP below or wait for the device to sync.
+            </span>
+          ) : null}
+        </label>
+      ) : null}
+
+      <label className="flex shrink-0 flex-col gap-1.5 text-[13px]">
+        <span className="text-[var(--color-text-subtle)]">Device IP or hostname</span>
+        <input
+          type="text"
+          className="ui-input font-mono"
+          placeholder="192.168.x.x"
+          value={host}
+          disabled={hostInputDisabled}
+          onChange={(e) => setHost(e.target.value)}
+        />
+      </label>
+
+      <div className="flex shrink-0 flex-wrap items-center gap-2">
+        <button
+          type="button"
+          className={toolbarBtn}
+          disabled={busyAction !== null || (!connected && !canConnect)}
+          data-analytics-id="deploy_disconnect"
+          data-analytics-area="deploy"
+          onClick={() => {
+            if (connected) {
+              void handleDisconnect();
+            } else {
+              void handleConnect();
+            }
+          }}
+        >
+          {busyAction === "connect"
+            ? "Connecting…"
+            : busyAction === "disconnect"
+              ? "Disconnecting…"
+              : connected
+                ? "Disconnect"
+                : "Connect"}
+        </button>
+        <span className="text-xs text-[var(--color-text-subtle)]">
+          {connected ? (
+            <>
+              Connected
+              {deviceName ? (
+                <>
+                  {" "}
+                  · <span className="font-medium text-[var(--color-text-primary)]">{deviceName}</span>
+                </>
+              ) : null}
+            </>
+          ) : (
+            "Not connected"
+          )}
+        </span>
+      </div>
+
+      <div className="flex shrink-0 flex-wrap gap-2">
+        <button
+          type="button"
+          className={deployRunning ? toolbarBtn : "ui-btn-primary"}
+          disabled={busyAction !== null || !connected || (!deployRunning && widgetParamActionsBlocked)}
+          aria-pressed={deployRunning}
+          aria-label={deployRunning ? "Stop remote app" : "Run current workspace"}
+          data-analytics-id={deployRunning ? "deploy_stop" : "deploy_run"}
+          data-analytics-area="deploy"
+          onClick={() => void run(deployRunning ? "stop" : "run")}
+        >
+          {deployButtonLabel}
+        </button>
+      </div>
+
+      {lastError ? (
+        <div className="shrink-0 rounded-lg border border-[var(--color-error-border)] bg-[var(--color-error-bg)] px-3 py-2 text-[13px] text-[var(--color-error-text)]">
+          {lastError}
+        </div>
+      ) : null}
+
+      {showWidgetParams ? (
+        <WidgetParamsEditor
+          config={widgetConfig}
+          store={widgetValuesByConfig}
+          onValuesChange={onWidgetValuesChange}
+          onApplyReload={handleApplyWidgetParams}
+        />
+      ) : null}
+
+      <div className="flex min-h-0 flex-1 flex-col gap-1">
+        <span className="text-xs font-medium uppercase tracking-wide text-[var(--color-text-subtle)]">Remote log</span>
+        <pre
+          ref={logRef}
+          className="min-h-[160px] flex-1 overflow-auto rounded-lg border border-edge bg-[var(--color-surface-elevated)] p-2 font-mono text-[11px] leading-relaxed text-[var(--color-text-primary)]"
+        >
+          {logLines.join("\n")}
+        </pre>
+      </div>
+      <CommunityErrorSnackbar
+        message={apiErrorSnackbar?.message ?? null}
+        detail={apiErrorSnackbar?.detail}
+        onDismiss={() => setApiErrorSnackbar(null)}
+      />
+    </div>
+  );
+});

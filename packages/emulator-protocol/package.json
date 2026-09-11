@@ -1,0 +1,14 @@
+{
+  "name": "@dartsnut/emulator-protocol",
+  "version": "2.0.0",
+  "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "vitest": "^3.1.3"
+  }
+}

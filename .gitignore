@@ -1,0 +1,27 @@
+**/node_modules
+**/target/
+**/dist
+**/.vite
+.env
+.env.release.local
+.cursor
+# Per-workspace agent session + transaction logs (when a project folder is opened in-repo)
+**/.dartsnut/
+.DS_Store
+__pycache__
+.venv
+.cache/
+
+**/release/
+openspec/
+.pnpm-store
+capture
+config
+logs
+test_configs
+docs/superpowers
+openspec
+.worktrees/
+
+# Cursor debug NDJSON logs (filename is debug-<sessionId>.log; session id is per chat/run)
+/debug-*.log

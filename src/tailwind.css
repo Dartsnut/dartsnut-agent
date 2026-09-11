@@ -1,0 +1,49 @@
+@layer theme, base, components, utilities;
+@import "tailwindcss/theme.css" layer(theme);
+
+/* Bridge a few tokens to shorter utilities; semantic colors still live in themes.css */
+@theme {
+  --color-page: var(--color-bg-page);
+  --color-fg: var(--color-text-primary);
+  --color-fg-strong: var(--color-text-strong);
+  --color-fg-muted: var(--color-text-muted);
+  --color-edge: var(--color-border);
+  --font-sans: var(--font-body);
+  --font-display: var(--font-display);
+  --font-mono: var(--font-mono);
+  --radius-ui-sm: var(--radius-sm);
+  --radius-ui-md: var(--radius-md);
+  --radius-ui-lg: var(--radius-lg);
+}
+
+@source ".";
+
+/* Preflight omitted; existing global CSS handles native window chrome and resets. */
+@import "tailwindcss/utilities.css" layer(utilities);
+
+@keyframes composer-send-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes greeting-rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes neon-pulse {
+  0%,
+  100% {
+    opacity: 0.85;
+  }
+  50% {
+    opacity: 1;
+  }
+}
