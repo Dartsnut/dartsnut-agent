@@ -11,6 +11,36 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::projects::ProjectStore;
 
+/// Packaged apps launched from Finder/Start Menu do not inherit the shell
+/// environment used during the release build. Keep development runtime
+/// configuration, but fall back to values embedded by rustc for releases.
+pub(crate) fn community_configured_env(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| match name {
+            "DARTSNUT_BASE_API" => option_env!("DARTSNUT_BASE_API").map(str::to_owned),
+            "DARTSNUT_GOOGLE_CLIENT_ID" => {
+                option_env!("DARTSNUT_GOOGLE_CLIENT_ID").map(str::to_owned)
+            }
+            "DARTSNUT_GOOGLE_DESKTOP_CLIENT_ID" => {
+                option_env!("DARTSNUT_GOOGLE_DESKTOP_CLIENT_ID").map(str::to_owned)
+            }
+            "DARTSNUT_GOOGLE_DESKTOP_CLIENT_SECRET" => {
+                option_env!("DARTSNUT_GOOGLE_DESKTOP_CLIENT_SECRET").map(str::to_owned)
+            }
+            "DARTSNUT_SUPABASE_URL" => option_env!("DARTSNUT_SUPABASE_URL").map(str::to_owned),
+            "DARTSNUT_SUPABASE_ANON_KEY" => {
+                option_env!("DARTSNUT_SUPABASE_ANON_KEY").map(str::to_owned)
+            }
+            "DARTSNUT_SUPABASE_DEVICE_TABLE" => {
+                option_env!("DARTSNUT_SUPABASE_DEVICE_TABLE").map(str::to_owned)
+            }
+            _ => None,
+        })
+        .filter(|value| !value.trim().is_empty())
+}
+
 pub struct AppState {
     pub projects: Mutex<Option<ProjectStore>>,
     pub workspace_root: Mutex<Option<PathBuf>>,
@@ -698,9 +728,10 @@ pub fn get_widget_config(state: State<'_, AppState>, payload: Option<Value>) -> 
 
 #[tauri::command]
 pub fn community_get_session(app: AppHandle) -> Value {
-    let google_client_id = std::env::var("DARTSNUT_GOOGLE_CLIENT_ID").unwrap_or_default();
+    let google_client_id =
+        community_configured_env("DARTSNUT_GOOGLE_CLIENT_ID").unwrap_or_default();
     let google_desktop_client_id =
-        std::env::var("DARTSNUT_GOOGLE_DESKTOP_CLIENT_ID").unwrap_or_default();
+        community_configured_env("DARTSNUT_GOOGLE_DESKTOP_CLIENT_ID").unwrap_or_default();
     let google_sign_in_available =
         !google_client_id.trim().is_empty() || !google_desktop_client_id.trim().is_empty();
     let fallback = json!({ "loggedIn": false, "account": null, "analyticsUserId": null, "authMethod": null, "hasSupabase": false, "googleClientId": google_client_id, "googleDesktopClientId": google_desktop_client_id, "googleSignInAvailable": google_sign_in_available });
@@ -714,11 +745,14 @@ pub fn community_get_session(app: AppHandle) -> Value {
             if let Some(obj) = value.as_object_mut() {
                 obj.remove("token");
                 obj.entry("googleClientId").or_insert_with(|| {
-                    Value::String(std::env::var("DARTSNUT_GOOGLE_CLIENT_ID").unwrap_or_default())
+                    Value::String(
+                        community_configured_env("DARTSNUT_GOOGLE_CLIENT_ID").unwrap_or_default(),
+                    )
                 });
                 obj.entry("googleDesktopClientId").or_insert_with(|| {
                     Value::String(
-                        std::env::var("DARTSNUT_GOOGLE_DESKTOP_CLIENT_ID").unwrap_or_default(),
+                        community_configured_env("DARTSNUT_GOOGLE_DESKTOP_CLIENT_ID")
+                            .unwrap_or_default(),
                     )
                 });
                 obj.insert(

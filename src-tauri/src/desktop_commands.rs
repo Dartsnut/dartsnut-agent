@@ -40,13 +40,9 @@ fn workspace_project_type(conf: &Value) -> &'static str {
 }
 
 pub(crate) fn community_base_url() -> Result<String, String> {
-    std::env::var("DARTSNUT_BASE_API")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
+    crate::commands::community_configured_env("DARTSNUT_BASE_API")
         .ok_or_else(|| "DARTSNUT_BASE_API is not configured.".to_owned())
-        .map(|value| value
-        .trim_end_matches('/')
-        .to_owned())
+        .map(|value| value.trim_end_matches('/').to_owned())
 }
 
 fn community_session_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -1311,9 +1307,10 @@ pub async fn community_login(app: AppHandle, payload: Option<Value>) -> Result<V
         .and_then(|v| v.get("method").and_then(Value::as_str))
         .unwrap_or("password");
     let oauth_id_token = if method == "googleOAuth" {
-        let client_id = std::env::var("DARTSNUT_GOOGLE_DESKTOP_CLIENT_ID")
-            .or_else(|_| std::env::var("DARTSNUT_GOOGLE_CLIENT_ID"))
-            .unwrap_or_default();
+        let client_id =
+            crate::commands::community_configured_env("DARTSNUT_GOOGLE_DESKTOP_CLIENT_ID")
+                .or_else(|| crate::commands::community_configured_env("DARTSNUT_GOOGLE_CLIENT_ID"))
+                .unwrap_or_default();
         if client_id.trim().is_empty() {
             return Ok(
                 json!({"ok":false,"code":"config_missing","message":"Google sign-in is not configured."}),
@@ -1353,10 +1350,10 @@ pub async fn community_login(app: AppHandle, payload: Option<Value>) -> Result<V
             ("code", code),
             ("code_verifier", pkce.verifier),
         ];
-        if let Ok(secret) = std::env::var("DARTSNUT_GOOGLE_DESKTOP_CLIENT_SECRET") {
-            if !secret.trim().is_empty() {
-                form.push(("client_secret", secret));
-            }
+        if let Some(secret) =
+            crate::commands::community_configured_env("DARTSNUT_GOOGLE_DESKTOP_CLIENT_SECRET")
+        {
+            form.push(("client_secret", secret));
         }
         let token_response = crate::proxy::client_for_url("https://oauth2.googleapis.com/token")?
             .post("https://oauth2.googleapis.com/token")
@@ -1432,7 +1429,7 @@ pub async fn community_login(app: AppHandle, payload: Option<Value>) -> Result<V
             .and_then(Value::as_str)
             .unwrap_or("Google user")
             .to_owned();
-        let session = json!({"loggedIn":true,"account":acct,"analyticsUserId":normalize_analytics_user_id(&user, &acct),"token":token,"authMethod":"google","hasSupabase":std::env::var("DARTSNUT_SUPABASE_ANON_KEY").map(|v| !v.is_empty()).unwrap_or(false)});
+        let session = json!({"loggedIn":true,"account":acct,"analyticsUserId":normalize_analytics_user_id(&user, &acct),"token":token,"authMethod":"google","hasSupabase":crate::commands::community_configured_env("DARTSNUT_SUPABASE_ANON_KEY").is_some()});
         let path = community_session_path(&app)?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -1482,7 +1479,7 @@ pub async fn community_login(app: AppHandle, payload: Option<Value>) -> Result<V
         .and_then(Value::as_str)
         .unwrap_or(account)
         .to_owned();
-    let session = json!({"loggedIn":true,"account":acct,"analyticsUserId":normalize_analytics_user_id(&user, &acct),"token":token,"authMethod":"password","hasSupabase":std::env::var("DARTSNUT_SUPABASE_ANON_KEY").map(|v| !v.is_empty()).unwrap_or(false)});
+    let session = json!({"loggedIn":true,"account":acct,"analyticsUserId":normalize_analytics_user_id(&user, &acct),"token":token,"authMethod":"password","hasSupabase":crate::commands::community_configured_env("DARTSNUT_SUPABASE_ANON_KEY").is_some()});
     let path = community_session_path(&app)?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -1619,13 +1616,8 @@ pub async fn community_list_deploy_devices(app: AppHandle) -> Result<Value, Stri
 
     // Live IP/SSID state is published in Supabase, not the binding API.
     // Merge it when configured so bound devices can be selected for deploy.
-    let supabase_url = std::env::var("DARTSNUT_SUPABASE_URL")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        ;
-    let supabase_key = std::env::var("DARTSNUT_SUPABASE_ANON_KEY")
-        .ok()
-        .filter(|value| !value.trim().is_empty());
+    let supabase_url = crate::commands::community_configured_env("DARTSNUT_SUPABASE_URL");
+    let supabase_key = crate::commands::community_configured_env("DARTSNUT_SUPABASE_ANON_KEY");
     let mut supabase_configured = supabase_key.is_some();
     if let (Some(supabase_url), Some(supabase_key)) = (supabase_url, supabase_key) {
         let ids = devices
@@ -1634,9 +1626,7 @@ pub async fn community_list_deploy_devices(app: AppHandle) -> Result<Value, Stri
             .filter(|id| !id.is_empty())
             .collect::<Vec<_>>();
         if !ids.is_empty() {
-            let table = std::env::var("DARTSNUT_SUPABASE_DEVICE_TABLE")
-                .ok()
-                .filter(|value| !value.trim().is_empty())
+            let table = crate::commands::community_configured_env("DARTSNUT_SUPABASE_DEVICE_TABLE")
                 .unwrap_or_else(|| "remote_devices".to_owned());
             let filter = format!(
                 "in.({})",
@@ -1956,7 +1946,10 @@ pub async fn community_upload_native_image(
             .to_owned(),
     );
     let form = multipart::Form::new().part("file", part);
-    let upload_url = format!("{}/community/upload/upload-native-image", community_base_url()?);
+    let upload_url = format!(
+        "{}/community/upload/upload-native-image",
+        community_base_url()?
+    );
     let response = crate::proxy::client_for_url(&upload_url)?
         .post(format!(
             "{}/community/upload/upload-native-image",

@@ -41,15 +41,19 @@ async fn shutdown_resources(app: &tauri::AppHandle) {
 }
 
 pub fn run() {
-    // Load repository-root development configuration before any command reads
-    // community/Supabase settings. Release builds must receive configuration
-    // from their packaged/runtime environment instead of a developer file.
+    // Load repository-root configuration before any command reads
+    // community/Supabase settings. Development prefers .env and falls back to
+    // the local release env so `pnpm dev` works without duplicated settings.
     #[cfg(debug_assertions)]
     {
-        let repo_env = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join(".env");
-        let _ = dotenvy::from_path(repo_env);
+        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let dev_env = repo_root.join(".env");
+        let env_path = if dev_env.is_file() {
+            dev_env
+        } else {
+            repo_root.join(".env.release.local")
+        };
+        let _ = dotenvy::from_path(env_path);
     }
 
     // reqwest is built with `rustls-no-provider`; install the ring provider
