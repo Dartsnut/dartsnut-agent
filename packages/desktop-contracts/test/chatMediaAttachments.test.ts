@@ -5,6 +5,7 @@ import {
   mergeChatMediaAttachments,
   type ChatMediaAttachment
 } from "../src/chatMediaAttachments";
+import type { PromptRequest } from "../src/contracts";
 
 describe("inferChatMediaAttachmentKind", () => {
   it("recognizes image, audio, and video files from MIME types and file names", () => {
@@ -73,5 +74,19 @@ describe("buildPromptWithChatMediaAttachments", () => {
     expect(prompt).toContain("assets/chat/title.png");
     expect(prompt).not.toContain("/Volumes/drive/Downloads/title.png");
     expect(prompt).toContain("Use only these workspace-relative paths");
+  });
+});
+
+describe("PromptRequest asset contract", () => {
+  it("does not expose the removed asset-applier request fields", () => {
+    const request: PromptRequest = { prompt: "Use the dropped asset." };
+    expect(request).toEqual({ prompt: "Use the dropped asset." });
+
+    // @ts-expect-error asset-applier routing was removed
+    const legacyMode: PromptRequest = { prompt: "", templateMode: "asset-applier" };
+    // @ts-expect-error assetApply and slotIds were removed
+    const legacyApply: PromptRequest = { prompt: "", assetApply: { slotIds: [], projectType: "game" } };
+    void legacyMode;
+    void legacyApply;
   });
 });

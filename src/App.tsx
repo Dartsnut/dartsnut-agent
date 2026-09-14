@@ -1072,8 +1072,8 @@ export function App() {
   }, [agentQuestion, bootstrap, machineMcpPicker.visible, sending]);
 
   // Tauri native drag/drop provides filesystem paths; browser DataTransfer
-  // intentionally hides them. Handle drops over composer directly so media
-  // Keep attachment path resolution inside typed Tauri boundary.
+  // intentionally hides them. Handle drops over the composer directly so media
+  // attachments still reach the typed Tauri boundary.
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | undefined;
@@ -3419,7 +3419,6 @@ export function App() {
             <div
               className={cn(
                 "ui-composer",
-                chatMediaAttachments.length > 0 && "ui-composer--has-attachments",
                 composerDragActive && "ui-composer--drag-active"
               )}
               data-expanded={composerExpandedSticky ? "true" : undefined}
@@ -3438,29 +3437,6 @@ export function App() {
                   <button type="button" role="menuitem" className="project-picker-menu__item" onClick={handleCreateProject}><Plus className="project-picker-menu__plus" size={20} aria-hidden /><span>Add project</span></button>
                 </div> : null}
               </div> : null}
-              {chatMediaAttachments.length > 0 ? (
-                <div className="ui-composer-attachments" aria-label="Attached media files">
-                  {chatMediaAttachments.map((attachment) => (
-                    <span key={attachment.path} className="ui-composer-attachment">
-                      <span className="ui-composer-attachment__kind">{attachment.kind}</span>
-                      <span className="ui-composer-attachment__name">{attachment.name}</span>
-                      <button
-                        type="button"
-                        className="ui-composer-attachment__remove"
-                        aria-label={`Remove ${attachment.name}`}
-                        data-analytics-id="agent_attachment_remove"
-                        data-analytics-area="agent"
-                        disabled={chatDisabled}
-                        onClick={() =>
-                          setChatMediaAttachments((prev) => prev.filter((item) => item.path !== attachment.path))
-                        }
-                      >
-                        x
-                      </button>
-                    </span>
-                  ))}
-                </div>
-              ) : null}
               <div className="ui-composer__input-row">
               <textarea
                 ref={promptInputRef}
