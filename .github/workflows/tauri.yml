@@ -22,7 +22,7 @@ jobs:
       - run: pnpm run build:renderer
       - run: pnpm test
       - run: pnpm run test:renderer
-      - run: pnpm run test:updater
+      - run: pnpm exec vitest run src/appUpdateStartup.test.ts
 
   rust-contracts:
     runs-on: macos-latest
