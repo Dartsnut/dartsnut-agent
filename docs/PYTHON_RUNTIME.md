@@ -76,7 +76,7 @@ Before every game or widget launch, bridge runs:
 
 `UV_PYTHON` pins workspace sync to managed Python. Launch requires workspace `.venv`; missing managed binaries or workspace Python is fatal. No `sys.executable` fallback exists.
 
-Workspace launch performs `uv sync --directory <workspace>` on demand; this is where project dependencies such as `pygame-ce`, `numpy`, and `pydartsnut` are installed. Asset binding installs pinned `Pillow` (`12.1.1`) on first use if `import PIL` fails, then launches the preprocessor. Repeated launches skip already-importable Pillow. Package-index selection belongs to the workspace/tool workflow; startup does not probe PyPI or persist a package index.
+Workspace launch performs `uv sync --directory <workspace>` on demand; this is where project dependencies such as `pygame-ce`, `numpy`, and `pydartsnut` are installed. Image preprocessing installs pinned `Pillow` (`12.1.1`) on first use if `import PIL` fails, then launches the preprocessor. Repeated launches skip already-importable Pillow. Package-index selection belongs to the workspace/tool workflow; startup does not probe PyPI or persist a package index.
 
 ## Version bump checklist
 

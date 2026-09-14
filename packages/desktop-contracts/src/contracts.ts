@@ -92,18 +92,13 @@ export interface PromptRequest {
   projectId?: string;
   chatId?: string;
   agentProfileId?: AgentProfileId;
-  templateMode?: "game-creator" | "widget-creator" | "asset-applier";
+  templateMode?: "game-creator" | "widget-creator";
   /**
    * Controls loading vs resetting on-disk workspace agent session (see `AgentSessionWorkspaceSummary`).
    * Omitted means **auto**: load `conversation.json` when present.
    */
   agentSession?: {
     intent: AgentSessionIntent;
-  };
-  /** Required when `templateMode === "asset-applier"`. */
-  assetApply?: {
-    slotIds: string[];
-    projectType: ProjectType;
   };
 }
 

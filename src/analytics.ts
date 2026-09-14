@@ -29,7 +29,7 @@ export function isFirebaseConfigComplete(config: typeof firebaseConfig): boolean
 export type AnalyticsValue = string | number | boolean;
 export type AnalyticsParams = Record<string, AnalyticsValue>;
 export type AnalyticsScreen = "main" | "settings";
-export type AnalyticsPanel = "emulator" | "assets" | "deploy" | "community";
+export type AnalyticsPanel = "emulator" | "deploy" | "community";
 
 export type AnalyticsUser = {
   analyticsUserId: string | null;
