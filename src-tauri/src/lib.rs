@@ -1,4 +1,5 @@
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 use tauri::{Manager, RunEvent, WindowEvent};
 use tauri_plugin_window_state::StateFlags;
 
@@ -35,7 +36,13 @@ async fn shutdown_resources(app: &tauri::AppHandle) {
     let connection = state.deploy.lock().ok().and_then(|mut slot| slot.take());
     if let Some(connection) = connection {
         connection.clear_disconnect_callback();
-        let _ = connection.close().await;
+        // A dropped/unreachable device must not keep the app alive forever
+        // while the quit path waits for graceful SSH disconnect.
+        match tokio::time::timeout(Duration::from_secs(3), connection.close()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => eprintln!("[shutdown] SSH disconnect failed: {error}"),
+            Err(_) => eprintln!("[shutdown] SSH disconnect timed out; continuing cleanup"),
+        }
     }
     state.emulator.stop().await;
 }
