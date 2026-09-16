@@ -509,12 +509,8 @@ pub(crate) struct CustomProviderSettings {
 
 pub(crate) fn read_provider_settings(app: &AppHandle) -> ProviderSettingsFile {
     let fallback = ProviderSettingsFile {
-        active_provider: "custom".to_owned(),
-        custom: CustomProviderSettings {
-            base_url: "https://api.openai.com/v1".to_owned(),
-            api_key: String::new(),
-            model: "gpt-4.1-mini".to_owned(),
-        },
+        active_provider: "dartsnut-llm".to_owned(),
+        custom: CustomProviderSettings::default(),
     };
     provider_file(app)
         .ok()
