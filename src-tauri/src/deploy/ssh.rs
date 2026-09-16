@@ -167,6 +167,7 @@ type DisconnectCallback = Arc<Mutex<Option<Arc<dyn Fn() + Send + Sync>>>>;
 pub struct SshConnection {
     session: russh::client::Handle<PolicyHandler>,
     disconnect_callback: DisconnectCallback,
+    sudo_password: String,
 }
 
 impl SshConnection {
@@ -186,6 +187,7 @@ impl SshConnection {
 
         let username = config.username;
         let password = config.password;
+        let sudo_password = password.clone();
         let address = (config.host, config.port);
         let session = tokio::time::timeout(config.connect_timeout, async move {
             let mut session = russh::client::connect(client_config, address, handler).await?;
@@ -201,6 +203,7 @@ impl SshConnection {
         Ok(Self {
             session,
             disconnect_callback,
+            sudo_password,
         })
     }
 
@@ -224,6 +227,15 @@ impl SshConnection {
     /// Execute command, collecting stdout and stderr separately.
     pub async fn exec(&self, command: &str) -> Result<ExecOutput, SshError> {
         self.exec_streaming(command, None, |_, _| {}).await
+    }
+
+    /// Authenticate sudo through stdin, keeping credentials out of command text.
+    pub async fn exec_sudo(&self, command: &str) -> Result<ExecOutput, SshError> {
+        self.exec_with_stdin(
+            &format!("sudo -S -p '' -- {command}"),
+            format!("{}\n", self.sudo_password).as_bytes(),
+        )
+        .await
     }
 
     /// Execute command after writing stdin and sending SSH EOF.
