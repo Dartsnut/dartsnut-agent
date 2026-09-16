@@ -43,3 +43,16 @@ jobs:
         run: cargo test --manifest-path src-tauri/Cargo.toml
       - name: Lint Tauri backend
         run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+
+  pr-ci:
+    name: PR CI gate
+    if: ${{ always() }}
+    needs: [javascript-contracts, rust-contracts]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require all checks to pass
+        if: ${{ needs.javascript-contracts.result != 'success' || needs.rust-contracts.result != 'success' }}
+        run: |
+          echo "PR checks did not pass: javascript=${{ needs.javascript-contracts.result }}, rust=${{ needs.rust-contracts.result }}"
+          exit 1
+      - run: echo "All PR checks passed"

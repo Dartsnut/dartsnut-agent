@@ -390,11 +390,18 @@ async fn run_prompt(
         if cancel.load(Ordering::Relaxed) {
             return Ok(json!({"ok":false,"message":"cancelled"}));
         }
+        let retry_prompt = if attempt == 1 || session.transcript.len() <= 1 {
+            effective_prompt.clone()
+        } else {
+            let context = session.transcript.iter().rev().take(40).rev()
+                .map(|line| format!("{}: {}", line.kind, line.text)).collect::<Vec<_>>().join("\n");
+            format!("Continue the interrupted request using this persisted conversation context:\n{}\n\nCurrent request:\n{}", context, effective_prompt)
+        };
         let result = crate::rig_runtime::stream_prompt_with_app_headers(
             &base_url,
             &api_key,
             &model,
-            &effective_prompt,
+            &retry_prompt,
             session.previous_response_id.clone(),
             app.path().app_data_dir().ok().and_then(|_| {
                 app.state::<AppState>()
