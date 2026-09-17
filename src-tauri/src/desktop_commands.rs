@@ -1186,6 +1186,14 @@ pub async fn deploy_run(
     let result = async {
         connection.upload_file(&local_archive, &remote_archive).await.map_err(|error| error.to_string())?;
         let remote_dir = format!("$HOME/dartsnut_rpi/apps/{app_id}");
+        // The firmware-owned apps parent may require root to create a child.
+        // Give the SSH user ownership so extraction and parameter writes stay unprivileged.
+        let prepared = connection.exec_sudo(&format!(
+            "install -d -m 0755 -o \"$(id -u)\" -g \"$(id -g)\" \"{remote_dir}\""
+        )).await.map_err(|error| error.to_string())?;
+        if prepared.exit_code != Some(0) {
+            return Err(format!("Could not prepare legacy app folder: {}", String::from_utf8_lossy(&prepared.stderr).trim()));
+        }
         let params = payload.as_ref().and_then(|value| value.get("widgetParamsJson")).and_then(Value::as_str).unwrap_or("");
         let command = if params.is_empty() {
             format!("set -e; mkdir -p {remote_dir}; tar -xzf {remote_archive} -C {remote_dir}; pkill -f 'main.py' || true; cd {remote_dir}; nohup python3 main.py > /tmp/dartsnut-{app_id}.log 2>&1 < /dev/null &")
