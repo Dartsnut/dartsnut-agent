@@ -198,6 +198,10 @@ fn should_retry_agent_attempt(attempt: usize, tools_this_attempt: bool) -> bool 
     attempt < MAX_ATTEMPTS && !tools_this_attempt
 }
 
+fn should_retry_empty_assistant(attempt: usize, mutated: bool) -> bool {
+    attempt < MAX_ATTEMPTS && !mutated
+}
+
 fn app_mutated_since(transcript: &[TranscriptLine], start: usize) -> bool {
     transcript.get(start..).into_iter().flatten().any(|line| {
         let Some(name) = line.tool_name.as_deref() else {
@@ -582,6 +586,28 @@ async fn run_prompt(
                         }
                     }
                 }
+                if outcome.output.trim().is_empty()
+                    && should_retry_empty_assistant(attempt, mutated)
+                {
+                    last_error = "empty assistant response".to_owned();
+                    emit(
+                        app,
+                        json!({"type":"status","message":format!("Retrying agent request ({attempt}/{MAX_ATTEMPTS}): empty assistant response"),"at":now_ms()}),
+                    );
+                    sleep(Duration::from_millis(100 * attempt as u64)).await;
+                    continue;
+                }
+                if outcome.output.trim().is_empty() && !mutated {
+                    last_error = "empty assistant response".to_owned();
+                    if let Some(run_id) = bridge_run_id.as_deref() {
+                        crate::desktop_commands::community_llm_finish_run(app, run_id).await;
+                    }
+                    emit(
+                        app,
+                        json!({"type":"error","message":last_error,"at":now_ms()}),
+                    );
+                    return Ok(json!({"ok":false,"failureReason":"empty_assistant_response","message":"The model finished without a reply. Try sending the request again."}));
+                }
                 session.updated_at = Some(chrono::Utc::now().to_rfc3339());
                 session.transcript.push(TranscriptLine {
                     kind: "assistant".into(),
@@ -713,6 +739,9 @@ mod tests {
         assert!(should_retry_agent_attempt(1, false));
         assert!(!should_retry_agent_attempt(1, true));
         assert!(!should_retry_agent_attempt(3, false));
+        assert!(should_retry_empty_assistant(1, false));
+        assert!(!should_retry_empty_assistant(1, true));
+        assert!(!should_retry_empty_assistant(3, false));
         let transcript = vec![
             TranscriptLine {
                 kind: "user".into(),

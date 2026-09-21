@@ -30,10 +30,13 @@ pub const MAX_TURNS: usize = 128;
 
 pub const AGENT_PREAMBLE: &str = r#"You are the Dartsnut Agent working in the current workspace. The user's request is the source of truth for what to build or change. Choose the design, files, tools, and order needed to fulfill that request.
 
-When a request creates or edits a Dartsnut game or widget, leave the workspace runnable before finishing. A runnable workspace has `main.py`, a valid `pyproject.toml` with non-empty `[project].name` and `[project].version` and direct `pydartsnut` in `[project].dependencies`, and either no `conf.json`, a legacy game manifest with `"type":"game"`, or a widget `conf.json` with valid `size` and `fields`. Preserve the behavior requested by the user and unrelated existing files.
+For an existing-file change, inspect the relevant source and apply the minimal patch. Do not load Dartsnut skills unless the files you already read do not show a needed pydartsnut, pygame, or conf.json API. Do not treat HUD, text, spacing, or color tweaks as a reason to load skills or to re-validate the whole project. On 128x160 layouts, the bottom screen is the 64x32 strip below y=128; HUD labels there are ordinary pygame text in `main.py`.
 
-Mutation results may include `workspace.ok` and `workspace.reason`. If the workspace is not runnable, make the minimum project-file changes needed to satisfy the prerequisite before finishing. Do not claim completion while the prerequisite is missing."#;
+When a request creates a new Dartsnut game or widget, leave the workspace runnable before finishing. A runnable workspace has `main.py`, a valid `pyproject.toml` with non-empty `[project].name` and `[project].version` and direct `pydartsnut` in `[project].dependencies`, and either no `conf.json`, a legacy game manifest with `"type":"game"`, or a widget `conf.json` with valid `size` and `fields`. Preserve the behavior requested by the user and unrelated existing files.
 
+Mutation results may include `workspace.ok` and `workspace.reason`. If a mutation leaves the workspace unrunnable, make the minimum project-file changes needed. After a successful existing-file patch with `workspace.ok=true`, finish unless the user asked to verify."#;
+
+pub const GET_DARTSNUT_SKILL_DESCRIPTION: &str = "Load dartsnut-core, dartsnut-game, or dartsnut-widget only when creating a new app or when workspace files do not already show a needed pydartsnut, pygame, or conf.json API. Do not load skills for existing HUD, text, spacing, or color edits.";
 
 /// Events emitted by Rig's native multi-turn stream. Keep provider payloads out
 /// of renderer events; only normalized text/tool metadata crosses this boundary.
@@ -444,7 +447,7 @@ fn workspace_tools_with_context(root: PathBuf, app: Option<AppHandle>) -> Vec<Dy
                 "apply_patch" => "Apply a workspace patch. This is the only file create/edit/delete/rename tool. Do not copy `read_file` line-number prefixes (`N\\t`). Format: first line `*** Begin Patch`, last line `*** End Patch`. Operations: `*** Add File: rel/path` then `+` lines; `*** Delete File: rel/path`; `*** Update File: rel/path` then optional `*** Move to: rel/path` then hunks. Hunk header `@@` or `@@ section`. Hunk lines start with ` ` (context), `-` (remove), or `+` (add). Blank line = blank context. Optional `*** End of File` after a hunk. Paths are workspace-relative.",
                 "grep_files" => "Search workspace files for matching text.",
                 "glob_files" => "List workspace files matching a glob pattern.",
-                "get_dartsnut_skill" => "Load a bundled Dartsnut domain skill as a reference when its API or layout details are needed.",
+                "get_dartsnut_skill" => GET_DARTSNUT_SKILL_DESCRIPTION,
                 "check_python" => {
                     "Run Python syntax checks on workspace files without executing them."
                 }
@@ -2085,6 +2088,10 @@ mod tests {
         assert!(AGENT_PREAMBLE.contains("The user's request is the source of truth"));
         assert!(AGENT_PREAMBLE.contains("Choose the design, files, tools, and order"));
         assert!(AGENT_PREAMBLE.contains("leave the workspace runnable before finishing"));
+        assert!(AGENT_PREAMBLE.contains("Do not load Dartsnut skills"));
+        assert!(AGENT_PREAMBLE.contains("existing-file change"));
+        assert!(AGENT_PREAMBLE.contains("bottom screen is the 64x32 strip"));
+        assert!(GET_DARTSNUT_SKILL_DESCRIPTION.contains("Do not load skills for existing"));
     }
 
     #[test]

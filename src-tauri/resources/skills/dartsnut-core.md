@@ -1,6 +1,6 @@
 ---
 name: dartsnut-core
-description: Core Dartsnut project contract, display mapping, and pydartsnut reference; load when those details are needed.
+description: Core Dartsnut project contract and pydartsnut/conf.json APIs; load when creating a new app or those APIs are missing from workspace files.
 ---
 
 # Dartsnut core

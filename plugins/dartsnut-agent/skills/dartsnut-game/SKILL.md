@@ -1,6 +1,6 @@
 ---
 name: dartsnut-game
-description: Pygame game-loop, machine-input, dependency, and small-screen layout reference.
+description: Pygame game-loop, machine-input, and dependency reference; load when adding game APIs, not for existing HUD text edits.
 ---
 
 # Dartsnut game

@@ -51,12 +51,10 @@ async fn shutdown_resources(app: &tauri::AppHandle) {
 
 /// Default `RUST_LOG` when the environment does not set one.
 ///
-/// Rig logs request/response JSON at TRACE on `rig::streaming` (streamed
-/// completions, the production path) and `rig::completions` (non-streamed).
-/// `rig_agent=info` keeps agent-loop lifecycle lines without dumping every
-/// internal TRACE event. Override with `RUST_LOG`.
-const DEFAULT_RUST_LOG: &str =
-    "warn,rig::streaming=trace,rig::completions=trace,rig_agent=info";
+/// Keep normal application lifecycle logs at INFO without emitting Rig's
+/// request/response JSON payloads, which are logged at TRACE.
+/// Override with `RUST_LOG` when detailed diagnostics are needed.
+const DEFAULT_RUST_LOG: &str = "info,rig_agent=warn";
 
 fn init_tracing() {
     tracing_subscriber::fmt()
@@ -265,7 +263,7 @@ mod tests {
     }
 
     #[test]
-    fn default_log_filter_prints_rig_streaming_payloads() {
+    fn default_log_filter_keeps_info_without_rig_payloads() {
         let buf = Arc::new(Mutex::new(Vec::new()));
         let subscriber = tracing_subscriber::fmt()
             .with_writer(Capture(buf.clone()))
@@ -282,22 +280,29 @@ mod tests {
                 target: "rig::completions",
                 "Gemini completion response: {{\"candidates\":[]}}"
             );
+            tracing::info!(target: "rig_agent::agent::prompt_request::streaming", "agent lifecycle");
+            tracing::info!(target: "dartsnut_agent_lib", "application lifecycle");
             tracing::debug!(target: "reqwest", "should stay filtered");
         });
 
         let output = String::from_utf8(buf.lock().expect("capture lock").clone()).unwrap();
         assert!(
-            output.contains("Gemini streaming completion request"),
-            "expected streamed request body in console logs, got: {output}"
+            !output.contains("Gemini streaming completion request"),
+            "streamed request body must stay filtered: {output}"
         );
         assert!(
-            output.contains("Gemini completion response"),
-            "expected completion response body in console logs, got: {output}"
+            !output.contains("Gemini completion response"),
+            "completion response body must stay filtered: {output}"
         );
         assert!(
             !output.contains("should stay filtered"),
-            "unrelated crates must remain at warn: {output}"
+            "debug events must stay filtered: {output}"
         );
+        assert!(
+            !output.contains("agent lifecycle"),
+            "rig agent info must stay filtered: {output}"
+        );
+        assert!(output.contains("application lifecycle"), "missing application info: {output}");
     }
 
 }

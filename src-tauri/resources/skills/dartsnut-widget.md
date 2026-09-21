@@ -1,6 +1,6 @@
 ---
 name: dartsnut-widget
-description: Pillow widget-loop, parameter, font, dependency, and glanceable-layout reference.
+description: Pillow widget-loop, parameter, font, and dependency reference; load when adding widget APIs, not for existing layout tweaks.
 ---
 
 # Dartsnut widget
