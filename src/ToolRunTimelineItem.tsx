@@ -18,33 +18,44 @@ function previewObject(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
+const PATCH_FILE_HEADER = /^\*\*\* (?:Add File|Update File|Delete File): (.+)$/m;
+
+function firstPatchPath(patch: string): string | null {
+  const match = patch.match(PATCH_FILE_HEADER);
+  return match?.[1] ?? null;
+}
+
+function patchLineDiff(patch: string): { added: number; deleted: number } {
+  let added = 0;
+  let deleted = 0;
+  for (const line of patch.split(/\r?\n/)) {
+    if (line.startsWith("+++") || line.startsWith("---")) continue;
+    if (line.startsWith("+")) added += 1;
+    else if (line.startsWith("-")) deleted += 1;
+  }
+  return { added, deleted };
+}
+
 function inputPath(call: TimelineToolCall): string | null {
   const input = previewObject(call.inputPreview);
+  if (call.toolName === "apply_patch" && typeof input?.patch === "string") {
+    const path = firstPatchPath(input.patch);
+    if (path) return path;
+  }
   const value = input?.path ?? input?.source;
   return typeof value === "string" && value.trim() ? value : null;
 }
 
-function lineCount(value: unknown): number | null {
-  if (typeof value !== "string" || value.startsWith("[binary or large")) return null;
-  return value.length === 0 ? 0 : value.split(/\r?\n/).length;
-}
-
-function callDiff(call: TimelineToolCall): { added: number; deleted: number } | null {
+export function callDiff(call: TimelineToolCall): { added: number; deleted: number } | null {
   const input = previewObject(call.inputPreview);
   if (!input) return null;
-  if (call.toolName === "write_file") {
-    const added = lineCount(input.content);
-    return added == null ? null : { added, deleted: 0 };
-  }
-  if (call.toolName === "replace_in_file") {
-    const added = lineCount(input.replace);
-    const deleted = lineCount(input.find);
-    return added == null || deleted == null ? null : { added, deleted };
+  if (call.toolName === "apply_patch" && typeof input.patch === "string") {
+    return patchLineDiff(input.patch);
   }
   return null;
 }
 
-function actionLabel(call: TimelineToolCall): string {
+export function actionLabel(call: TimelineToolCall): string {
   const path = inputPath(call);
   const running = call.status === "running";
   const labels: Record<string, [string, string]> = {
@@ -52,8 +63,7 @@ function actionLabel(call: TimelineToolCall): string {
     glob_files: ["Finding files", "Found files"],
     grep_files: ["Searching files", "Searched files"],
     read_file: ["Reading", "Read"],
-    write_file: ["Creating", "Created"],
-    replace_in_file: ["Editing", "Edited"],
+    apply_patch: ["Patching", "Patched"],
     get_dartsnut_skill: ["Loading skill", "Loaded skill"],
     check_python: ["Checking Python", "Checked Python"],
     reload_emulator: ["Reloading emulator", "Reloaded emulator"],
@@ -64,6 +74,15 @@ function actionLabel(call: TimelineToolCall): string {
   };
   const pair = labels[call.toolName];
   const base = pair ? pair[running ? 0 : 1] : `${running ? "Running" : "Finished"} ${call.toolName}`;
+  if (call.toolName === "apply_patch") {
+    const input = previewObject(call.inputPreview);
+    const patch = typeof input?.patch === "string" ? input.patch : "";
+    if (patch.includes("*** Move to: ") && patch.includes("*** Update File: ")) {
+      const from = patch.match(/^\*\*\* Update File: (.+)$/m)?.[1];
+      const to = patch.match(/^\*\*\* Move to: (.+)$/m)?.[1];
+      if (from && to) return `${base} ${from} → ${to}`;
+    }
+  }
   return path ? `${base} ${path}` : base;
 }
 

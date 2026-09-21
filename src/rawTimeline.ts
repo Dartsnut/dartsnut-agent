@@ -197,6 +197,12 @@ export function describeTimelineError(input: string): TimelineErrorPresentation 
       message: "Wait for the current agent run to finish, then try again."
     };
   }
+  if (normalized.includes("unsupported_api_format") || normalized.includes("unsupported api format")) {
+    return {
+      title: "Format mismatch",
+      message: "The server's LLM format changed. Restart the agent to reconnect."
+    };
+  }
 
   // Hide upstream LLM errors - show generic message without technical details
   if (

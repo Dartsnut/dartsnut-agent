@@ -1,13 +1,13 @@
 ---
 name: dartsnut-core
-description: Core Dartsnut project contract, workspace workflow, display mapping, shared pydartsnut rules, and emulator verification. Load for every Dartsnut game or widget change.
+description: Core Dartsnut project contract, display mapping, and pydartsnut reference; load when those details are needed.
 ---
 
 # Dartsnut core
 
 ## Workspace
 
-- Inspect existing files before editing. Preserve unrelated code and config.
+- Preserve unrelated code and config.
 - New games need `main.py` and `pyproject.toml`. New widgets additionally need `conf.json`.
 - A project is valid only when `pyproject.toml` has non-empty `[project].name` and `[project].version`, plus direct `pydartsnut` in `[project].dependencies`.
 - `[project].name` is project identity and `[project].version` is publish version. New games omit `conf.json`. For compatibility, an existing `conf.json` with `"type": "game"` is accepted as a legacy game manifest; any other present `conf.json` must contain both `size` and `fields` or the widget is broken.
@@ -52,14 +52,6 @@ engine.update_frame_buffer(
 
 The logical framebuffer may map to a `128x128` main panel plus a `64x32` bottom panel for `128x160`. Keep important content within its intended panel, clip deliberately, and use native-size readable text.
 
-## Verification
+## Finish condition
 
-After material changes:
-
-1. `check_python` for changed Python files.
-2. `reload_emulator`.
-3. `observe_emulator` and inspect panel mapping/nonblank bounds; use PNG output when visual layout matters.
-4. `get_emulator_logs` and fix `Traceback`, `SyntaxError`, or `ModuleNotFoundError`.
-5. For games, exercise a dart or button path with emulator input tools and observe the state change.
-
-Finish only when the requested behavior runs, the frame is readable and nonblank, mapping matches the configured widget size or game framebuffer, and logs are clean.
+The user's requested behavior is the priority. When the request creates or edits app files, finish only with a runnable workspace: `main.py` and a valid `pyproject.toml` as above; widgets also need valid `conf.json`. Choose whatever inspection and validation is useful for the requested change.

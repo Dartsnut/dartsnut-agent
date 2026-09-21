@@ -4,6 +4,7 @@
 //! gateways, while this module validates and constructs Rig's native agent
 //! runtime for compatible OpenAI endpoints.
 
+use crate::api_format::ApiFormat;
 use base64::Engine;
 use futures_util::StreamExt;
 use reqwest::header::HeaderMap;
@@ -26,6 +27,13 @@ use tokio::time::{sleep, Duration};
 
 /// Production agent turn budget. Matches legacy @openai/agents loop limit.
 pub const MAX_TURNS: usize = 128;
+
+pub const AGENT_PREAMBLE: &str = r#"You are the Dartsnut Agent working in the current workspace. The user's request is the source of truth for what to build or change. Choose the design, files, tools, and order needed to fulfill that request.
+
+When a request creates or edits a Dartsnut game or widget, leave the workspace runnable before finishing. A runnable workspace has `main.py`, a valid `pyproject.toml` with non-empty `[project].name` and `[project].version` and direct `pydartsnut` in `[project].dependencies`, and either no `conf.json`, a legacy game manifest with `"type":"game"`, or a widget `conf.json` with valid `size` and `fields`. Preserve the behavior requested by the user and unrelated existing files.
+
+Mutation results may include `workspace.ok` and `workspace.reason`. If the workspace is not runnable, make the minimum project-file changes needed to satisfy the prerequisite before finishing. Do not claim completion while the prerequisite is missing."#;
+
 
 /// Events emitted by Rig's native multi-turn stream. Keep provider payloads out
 /// of renderer events; only normalized text/tool metadata crosses this boundary.
@@ -239,11 +247,11 @@ pub fn build_agent_with_context(
         workspace_root,
         app,
         http_client,
+        None, // No format override for legacy callers
     )
 }
 
 /// Async agent construction used by production execution. Allows remote PAC
-/// scripts to be fetched before Rig starts its provider stream.
 pub async fn build_agent_with_context_async(
     base_url: &str,
     api_key: &str,
@@ -260,6 +268,7 @@ pub async fn build_agent_with_context_async(
         workspace_root,
         app,
         None,
+        None, // No format override for legacy callers
     )
     .await
 }
@@ -272,6 +281,7 @@ pub async fn build_agent_with_context_async_headers(
     workspace_root: Option<PathBuf>,
     app: Option<AppHandle>,
     headers: Option<HeaderMap>,
+    api_format: Option<&str>,
 ) -> Result<Agent, String> {
     crate::ensure_rustls_crypto_provider();
     let http_client = match headers {
@@ -286,8 +296,11 @@ pub async fn build_agent_with_context_async_headers(
         workspace_root,
         app,
         http_client,
+        api_format,
     )
 }
+
+
 
 fn build_agent_with_http_client(
     base_url: &str,
@@ -297,16 +310,72 @@ fn build_agent_with_http_client(
     workspace_root: Option<PathBuf>,
     app: Option<AppHandle>,
     http_client: reqwest::Client,
+    api_format: Option<&str>,
 ) -> Result<Agent, String> {
-    let client = rig_agent::core::providers::openai::Client::builder()
-        .api_key(api_key)
-        .base_url(base_url)
-        .http_client(http_client)
-        .build()
-        .map_err(|error| error.to_string())?;
-    let mut builder = AgentBuilder::new(client.completion_model(model))
+    // Parse and resolve format, defaulting to Responses for backward compatibility
+    let format = api_format
+        .and_then(|s| s.parse::<ApiFormat>().ok())
+        .unwrap_or_default()
+        .resolve();
+    
+    // Strip version paths only for non-OpenAI formats
+    // OpenAI client expects base_url to include /v1 (e.g., https://api.openai.com/v1)
+    // Gemini/Claude clients append their own paths and need clean base (e.g., https://gateway.com)
+    let normalized_base_url = match format {
+        ApiFormat::Responses | ApiFormat::ChatCompletion => {
+            // Keep /v1 for OpenAI formats
+            base_url.trim_end_matches('/')
+        }
+        ApiFormat::Claude | ApiFormat::Gemini => {
+            // Strip version paths for native provider formats
+            base_url
+                .trim_end_matches('/')
+                .trim_end_matches("/v1")
+                .trim_end_matches("/v1beta")
+                .trim_end_matches("/api")
+        }
+        ApiFormat::Auto => {
+            return Err("ApiFormat::Auto should have been resolved before this point".to_string());
+        }
+    };
+    // Build provider-specific client with custom base_url
+    let mut builder = match format {
+        ApiFormat::Responses | ApiFormat::ChatCompletion => {
+            let client = rig_agent::core::providers::openai::Client::builder()
+                .api_key(api_key)
+                .base_url(normalized_base_url)
+                .http_client(http_client)
+                .build()
+                .map_err(|error| error.to_string())?;
+            AgentBuilder::new(client.completion_model(model))
+        }
+        ApiFormat::Claude => {
+            let client = rig_agent::core::providers::anthropic::Client::builder()
+                .api_key(api_key)
+                .base_url(normalized_base_url)
+                .http_client(http_client)
+                .build()
+                .map_err(|error| error.to_string())?;
+            AgentBuilder::new(client.completion_model(model))
+        }
+        ApiFormat::Gemini => {
+            let client = rig_agent::core::providers::gemini::Client::builder()
+                .api_key(api_key)
+                .base_url(normalized_base_url)
+                .http_client(http_client)
+                .build()
+                .map_err(|error| error.to_string())?;
+            AgentBuilder::new(client.completion_model(model))
+        }
+        ApiFormat::Auto => {
+            return Err("ApiFormat::Auto should have been resolved before this point".to_string());
+        }
+    };
+    
+    builder = builder
         .name("dartsnut-agent")
         .default_max_turns(MAX_TURNS);
+    
     if let Some(preamble) = preamble.filter(|value| !value.trim().is_empty()) {
         builder = builder.preamble(preamble);
     }
@@ -326,12 +395,12 @@ fn workspace_tools_with_context(root: PathBuf, app: Option<AppHandle>) -> Vec<Dy
         "read_file" => {
             serde_json::json!({"type":"object","properties":{"path":{"type":"string"},"offset":{"type":"number"},"limit":{"type":"number"}},"required":["path"]})
         }
-        "write_file" => {
-            serde_json::json!({"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]})
-        }
-        "replace_in_file" => {
-            serde_json::json!({"type":"object","properties":{"path":{"type":"string"},"find":{"type":"string"},"replace":{"type":"string"},"replace_all":{"type":"boolean"}},"required":["path","find","replace"]})
-        }
+        "apply_patch" => serde_json::json!({
+            "type":"object",
+            "properties":{"patch":{"type":"string"}},
+            "required":["patch"],
+            "additionalProperties":false
+        }),
         "grep_files" => {
             serde_json::json!({"type":"object","properties":{"pattern":{"type":"string"},"glob":{"type":"string"},"path":{"type":"string"},"ignore_case":{"type":"boolean"},"max_results":{"type":"number"}},"required":["pattern"],"additionalProperties":false})
         }
@@ -355,8 +424,7 @@ fn workspace_tools_with_context(root: PathBuf, app: Option<AppHandle>) -> Vec<Dy
     let names = [
         "list_files",
         "read_file",
-        "write_file",
-        "replace_in_file",
+        "apply_patch",
         "grep_files",
         "glob_files",
         "get_dartsnut_skill",
@@ -373,11 +441,10 @@ fn workspace_tools_with_context(root: PathBuf, app: Option<AppHandle>) -> Vec<Dy
             let description = match name {
                 "list_files" => "List files inside the workspace recursively.",
                 "read_file" => "Read a UTF-8 workspace file, optionally selecting line ranges.",
-                "write_file" => "Write UTF-8 content to a workspace file.",
-                "replace_in_file" => "Replace text in an existing workspace file.",
+                "apply_patch" => "Apply a workspace patch. This is the only file create/edit/delete/rename tool. Do not copy `read_file` line-number prefixes (`N\\t`). Format: first line `*** Begin Patch`, last line `*** End Patch`. Operations: `*** Add File: rel/path` then `+` lines; `*** Delete File: rel/path`; `*** Update File: rel/path` then optional `*** Move to: rel/path` then hunks. Hunk header `@@` or `@@ section`. Hunk lines start with ` ` (context), `-` (remove), or `+` (add). Blank line = blank context. Optional `*** End of File` after a hunk. Paths are workspace-relative.",
                 "grep_files" => "Search workspace files for matching text.",
                 "glob_files" => "List workspace files matching a glob pattern.",
-                "get_dartsnut_skill" => "Load one bundled Dartsnut domain skill by ID.",
+                "get_dartsnut_skill" => "Load a bundled Dartsnut domain skill as a reference when its API or layout details are needed.",
                 "check_python" => {
                     "Run Python syntax checks on workspace files without executing them."
                 }
@@ -1358,7 +1425,7 @@ async fn execute_check_python(
     )
 }
 
-fn safe_path(root: &Path, value: Option<&Value>) -> Result<PathBuf, String> {
+pub(crate) fn safe_path(root: &Path, value: Option<&Value>) -> Result<PathBuf, String> {
     let rel = value.and_then(Value::as_str).unwrap_or(".");
     let path = Path::new(rel);
     if path.is_absolute()
@@ -1440,51 +1507,16 @@ fn execute_workspace_tool_with_app(
                 serde_json::json!({"ok":true,"content":selected,"startLine":start,"endLine":end,"lineCount":lines.len()}),
             )
         }
-        "write_file" => {
-            let path = safe_path(&root, args.get("path"))?;
-            let content = args
-                .get("content")
-                .and_then(Value::as_str)
-                .ok_or("content is required")?;
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        "apply_patch" => {
+            let patch = args.get("patch").and_then(Value::as_str).ok_or("patch is required")?;
+            let result = crate::file_patch::apply_patch(&root, patch)?;
+            if result.get("ok").and_then(Value::as_bool) == Some(true) {
+                if let Some(app) = app {
+                    crate::commands::publish_workspace_classification(app);
+                }
+                return Ok(crate::commands::attach_workspace_status(&root, result));
             }
-            std::fs::write(path, content).map_err(|e| e.to_string())?;
-            Ok(serde_json::json!({"ok":true}))
-        }
-        "replace_in_file" => {
-            let path = safe_path(&root, args.get("path"))?;
-            let find = args
-                .get("find")
-                .and_then(Value::as_str)
-                .ok_or("find is required")?;
-            if find.is_empty() {
-                return Err("find must be non-empty".into());
-            }
-            let replace = args.get("replace").and_then(Value::as_str).unwrap_or("");
-            let replace_all = args
-                .get("replace_all")
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
-            let content = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-            let count = content.matches(find).count();
-            if count == 0 {
-                return Ok(
-                    serde_json::json!({"ok":false,"error":"find target not present in file"}),
-                );
-            }
-            if count > 1 && !replace_all {
-                return Ok(
-                    serde_json::json!({"ok":false,"error":format!("find matches {count} times; set replace_all to true") }),
-                );
-            }
-            let next = if replace_all {
-                content.replace(find, replace)
-            } else {
-                content.replacen(find, replace, 1)
-            };
-            std::fs::write(path, next).map_err(|e| e.to_string())?;
-            Ok(serde_json::json!({"ok":true,"replaced":if replace_all {count} else {1}}))
+            Ok(result)
         }
         "grep_files" => {
             let pattern = args
@@ -1579,7 +1611,10 @@ fn execute_workspace_tool_with_app(
                 std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
             }
             std::fs::copy(source_path, destination).map_err(|e| e.to_string())?;
-            Ok(serde_json::json!({"ok":true}))
+            Ok(crate::commands::attach_workspace_status(
+                &root,
+                serde_json::json!({"ok":true}),
+            ))
         }
         "copy_chat_attachment" => {
             let attachment_id = args
@@ -1612,18 +1647,24 @@ fn execute_workspace_tool_with_app(
                 return Err("attachment source not found".to_owned());
             }
             if source == destination {
-                return Ok(serde_json::json!({"ok":true,"path":relative}));
+                return Ok(crate::commands::attach_workspace_status(
+                    &root,
+                    serde_json::json!({"ok":true,"path":relative}),
+                ));
             }
             if let Some(parent) = destination.parent() {
                 std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
             }
             std::fs::copy(&source, &destination).map_err(|e| e.to_string())?;
             let output = destination
-                .strip_prefix(root)
+                .strip_prefix(&root)
                 .unwrap_or(&destination)
                 .to_string_lossy()
                 .replace('\\', "/");
-            Ok(serde_json::json!({"ok":true,"path":output,"source":relative}))
+            Ok(crate::commands::attach_workspace_status(
+                &root,
+                serde_json::json!({"ok":true,"path":output,"source":relative}),
+            ))
         }
         _ => Err(format!("unknown workspace tool: {name}")),
     }
@@ -1688,6 +1729,7 @@ pub fn validate_agent_configuration(
     base_url: &str,
     api_key: &str,
     model: &str,
+    api_format: Option<&str>,
 ) -> Result<(), String> {
     crate::ensure_rustls_crypto_provider();
     // Configuration validation must stay side-effect free. In particular, do
@@ -1697,7 +1739,7 @@ pub fn validate_agent_configuration(
     let client = reqwest::Client::builder()
         .build()
         .map_err(|error| error.to_string())?;
-    let _agent = build_agent_with_http_client(base_url, api_key, model, None, None, None, client)?;
+    let _agent = build_agent_with_http_client(base_url, api_key, model, None, None, None, client, api_format)?;
     Ok(())
 }
 
@@ -1757,6 +1799,7 @@ where
         cancel,
         app,
         None,
+        None,
         on_event,
     )
     .await
@@ -1773,6 +1816,7 @@ pub async fn stream_prompt_with_app_headers<F>(
     cancel: Arc<AtomicBool>,
     app: Option<AppHandle>,
     headers: Option<HeaderMap>,
+    api_format: Option<String>,
     mut on_event: F,
 ) -> Result<StreamOutcome, String>
 where
@@ -1782,10 +1826,11 @@ where
         base_url,
         api_key,
         model,
-        None,
+        Some(AGENT_PREAMBLE),
         workspace_root,
         app,
         headers,
+        api_format.as_deref(),
     )
     .await?;
     let lifecycle_hook = ToolLifecycleHook::default();
@@ -1795,10 +1840,18 @@ where
         .stream_prompt(prompt)
         .max_turns(MAX_TURNS)
         .add_hook(lifecycle_hook);
+    // previous_response_id is OpenAI Responses API specific - only add for Responses format
+    let format = api_format
+        .as_deref()
+        .and_then(|s| s.parse::<ApiFormat>().ok())
+        .unwrap_or_default()
+        .resolve();
     if let Some(previous_response_id) = previous_response_id {
-        request = request.replace_additional_params(
-            serde_json::json!({"previous_response_id": previous_response_id}),
-        );
+        if format == ApiFormat::Responses {
+            request = request.replace_additional_params(
+                serde_json::json!({"previous_response_id": previous_response_id}),
+            );
+        }
     }
     let mut stream = request.await;
     let mut output = String::new();
@@ -1829,7 +1882,8 @@ where
         let item = match item {
             Ok(item) => item,
             Err(error) => {
-                let message = error.to_string();
+                let error_string = error.to_string();
+                let message = error_string;
                 for (call_id, (name, started_at)) in active_tools.drain() {
                     on_event(StreamEvent::ToolCallFinished {
                         run_id: run_id.clone(),
@@ -2011,7 +2065,7 @@ mod tests {
 
     #[test]
     fn accepts_openai_compatible_base_url_without_key_for_custom_gateways() {
-        assert!(validate_agent_configuration("http://localhost:4000/v1", "", "model").is_ok());
+        assert!(validate_agent_configuration("http://localhost:4000/v1", "", "model", None).is_ok());
     }
 
     #[test]
@@ -2024,6 +2078,13 @@ mod tests {
         );
         assert!(agent.is_ok());
         assert_eq!(MAX_TURNS, 128);
+    }
+
+    #[test]
+    fn production_stream_uses_outcome_only_preamble() {
+        assert!(AGENT_PREAMBLE.contains("The user's request is the source of truth"));
+        assert!(AGENT_PREAMBLE.contains("Choose the design, files, tools, and order"));
+        assert!(AGENT_PREAMBLE.contains("leave the workspace runnable before finishing"));
     }
 
     #[test]
@@ -2115,6 +2176,77 @@ mod tests {
             )
             .is_err());
         }
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn apply_patch_adds_and_updates_inside_workspace() {
+        let root = std::env::temp_dir().join(format!("dartsnut-apply-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("main.txt"), "hello\nworld\n").unwrap();
+        let patch = "*** Begin Patch\n*** Add File: extra.txt\n+hi\n*** Update File: main.txt\n@@\n hello\n-world\n+there\n*** End Patch";
+        let result = execute_workspace_tool(
+            "apply_patch",
+            &root,
+            serde_json::json!({"patch": patch}),
+        )
+        .unwrap();
+        assert_eq!(result["ok"], true);
+        assert_eq!(result["files"][0]["action"], "add");
+        assert_eq!(result["files"][1]["action"], "update");
+        assert_eq!(std::fs::read(root.join("extra.txt")).unwrap(), b"hi");
+        assert_eq!(
+            std::fs::read_to_string(root.join("main.txt")).unwrap(),
+            "hello\nthere\n"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn apply_patch_reports_missing_pyproject_workspace_status() {
+        let root = std::env::temp_dir().join(format!("dartsnut-apply-status-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let patch = "*** Begin Patch\n*** Add File: extra.txt\n+hi\n*** End Patch";
+        let result = execute_workspace_tool(
+            "apply_patch",
+            &root,
+            serde_json::json!({"patch": patch}),
+        )
+        .unwrap();
+        assert_eq!(result["ok"], true);
+        assert_eq!(result["workspace"]["reason"], "missing_pyproject");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn apply_patch_reports_runnable_game_workspace() {
+        let root = std::env::temp_dir().join(format!("dartsnut-apply-game-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let patch = "*** Begin Patch\n*** Add File: pyproject.toml\n+[project]\n+name = \"demo\"\n+version = \"1.2.3\"\n+dependencies = [\"pydartsnut\"]\n*** Add File: main.py\n+print('ok')\n*** End Patch";
+        let result = execute_workspace_tool(
+            "apply_patch",
+            &root,
+            serde_json::json!({"patch": patch}),
+        )
+        .unwrap();
+        assert_eq!(result["ok"], true);
+        assert_eq!(result["workspace"]["ok"], true);
+        assert_eq!(result["workspace"]["projectType"], "game");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn apply_patch_rejects_workspace_escape() {
+        let root = std::env::temp_dir().join(format!("dartsnut-apply-jail-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let patch = "*** Begin Patch\n*** Add File: ../secret\n+x\n*** End Patch";
+        let err = execute_workspace_tool(
+            "apply_patch",
+            &root,
+            serde_json::json!({"patch": patch}),
+        )
+        .unwrap_err();
+        assert_eq!(err, "path escapes workspace root");
         let _ = std::fs::remove_dir_all(root);
     }
 

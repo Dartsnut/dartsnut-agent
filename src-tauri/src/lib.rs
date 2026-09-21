@@ -4,10 +4,12 @@ use tauri::{Manager, RunEvent, WindowEvent};
 use tauri_plugin_window_state::StateFlags;
 
 pub mod agent;
+pub mod api_format;
 pub mod commands;
 pub mod deploy;
 pub mod desktop_commands;
 pub mod emulator;
+pub mod file_patch;
 pub mod oauth;
 pub mod pending_inputs;
 pub mod projects;
@@ -47,7 +49,28 @@ async fn shutdown_resources(app: &tauri::AppHandle) {
     state.emulator.stop().await;
 }
 
+/// Default `RUST_LOG` when the environment does not set one.
+///
+/// Rig logs request/response JSON at TRACE on `rig::streaming` (streamed
+/// completions, the production path) and `rig::completions` (non-streamed).
+/// `rig_agent=info` keeps agent-loop lifecycle lines without dumping every
+/// internal TRACE event. Override with `RUST_LOG`.
+const DEFAULT_RUST_LOG: &str =
+    "warn,rig::streaming=trace,rig::completions=trace,rig_agent=info";
+
+fn init_tracing() {
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(DEFAULT_RUST_LOG)),
+        )
+        .init();
+}
+
 pub fn run() {
+    init_tracing();
+
     // Load repository-root configuration before any command reads
     // community/Supabase settings. Development prefers .env and falls back to
     // the local release env so `pnpm dev` works without duplicated settings.
@@ -186,6 +209,7 @@ pub fn run() {
                 window.set_decorations(false)?;
             }
             let handle = app.handle().clone();
+            commands::start_workspace_monitor(handle.clone());
             let runtime = handle.state::<commands::AppState>().runtime.clone();
             runtime.start(handle);
             Ok(())
@@ -210,4 +234,70 @@ pub fn run() {
                 app.exit(code.unwrap_or(0));
             });
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DEFAULT_RUST_LOG;
+    use std::io::{self, Write};
+    use std::sync::{Arc, Mutex};
+    use tracing_subscriber::fmt::MakeWriter;
+    use tracing_subscriber::EnvFilter;
+
+    #[derive(Clone)]
+    struct Capture(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for Capture {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0.lock().expect("capture lock").extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> MakeWriter<'a> for Capture {
+        type Writer = Self;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    #[test]
+    fn default_log_filter_prints_rig_streaming_payloads() {
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(Capture(buf.clone()))
+            .with_env_filter(EnvFilter::new(DEFAULT_RUST_LOG))
+            .with_ansi(false)
+            .finish();
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::trace!(
+                target: "rig::streaming",
+                "Gemini streaming completion request: {{\"model\":\"gemini\"}}"
+            );
+            tracing::trace!(
+                target: "rig::completions",
+                "Gemini completion response: {{\"candidates\":[]}}"
+            );
+            tracing::debug!(target: "reqwest", "should stay filtered");
+        });
+
+        let output = String::from_utf8(buf.lock().expect("capture lock").clone()).unwrap();
+        assert!(
+            output.contains("Gemini streaming completion request"),
+            "expected streamed request body in console logs, got: {output}"
+        );
+        assert!(
+            output.contains("Gemini completion response"),
+            "expected completion response body in console logs, got: {output}"
+        );
+        assert!(
+            !output.contains("should stay filtered"),
+            "unrelated crates must remain at warn: {output}"
+        );
+    }
+
 }

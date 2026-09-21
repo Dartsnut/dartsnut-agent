@@ -40,6 +40,11 @@ fn workspace_project_type(conf: &Value) -> &'static str {
 }
 
 pub(crate) fn community_base_url() -> Result<String, String> {
+    // Debug override: DARTSNUT_LLM_BASE_URL takes precedence
+    if let Ok(debug_url) = std::env::var("DARTSNUT_LLM_BASE_URL") {
+        return Ok(debug_url.trim_end_matches('/').to_owned());
+    }
+    
     crate::commands::community_configured_env("DARTSNUT_BASE_API")
         .ok_or_else(|| "DARTSNUT_BASE_API is not configured.".to_owned())
         .map(|value| value.trim_end_matches('/').to_owned())
@@ -101,6 +106,52 @@ pub(crate) async fn community_llm_finish_run(app: &AppHandle, run_id: &str) {
         Some(json!({"run_id": run_id})),
     )
     .await;
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct LlmBridgeInfo {
+    pub api_format: String,
+    pub model: String,
+    pub path: String,
+    #[serde(default)]
+    pub stream_path: Option<String>,
+    #[serde(default)]
+    pub allowed_paths: Vec<String>,
+    #[serde(default)]
+    pub supported_formats: Vec<SupportedFormat>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct SupportedFormat {
+    #[serde(alias = "api_format")]
+    pub format: String,
+    pub path: String,
+    #[serde(default)]
+    pub stream_path: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+pub(crate) async fn community_llm_info(app: &AppHandle) -> Result<LlmBridgeInfo, String> {
+    let token = community_token(app)
+        .ok_or_else(|| "Sign in to your Dartsnut account to use Dartsnut LLM.".to_owned())?;
+    let (status, raw) = community_request(
+        reqwest::Method::GET,
+        "/agent/llm/info",
+        Some(&token),
+        None,
+    ).await?;
+    if !(200..300).contains(&status) || raw.get("code").and_then(Value::as_i64) != Some(1001) {
+        let message = raw.get("desc")
+            .or_else(|| raw.get("msg"))
+            .and_then(Value::as_str)
+            .unwrap_or("Could not discover LLM endpoint configuration.");
+        return Err(message.to_owned());
+    }
+    let data = raw.get("data")
+        .ok_or_else(|| "Discovery response missing data field.".to_owned())?;
+    serde_json::from_value(data.clone())
+        .map_err(|e| format!("Invalid discovery response: {} | Data: {:?}", e, data))
 }
 
 fn community_error(code: &str, message: impl Into<String>, server: Option<&str>) -> Value {
@@ -2221,6 +2272,27 @@ mod tests {
         assert_eq!(normalized["limitTokens"], 10000000);
         assert_eq!(normalized["remainingTokens"], 9998500);
         assert_eq!(normalized["customLimitTokens"], Value::Null);
+    }
+
+    #[test]
+    fn parse_llm_info_response() {
+        let mock_response = json!({
+            "api_format": "responses",
+            "model": "test-model",
+            "path": "/v1/responses",
+            "stream_path": null,
+            "allowed_paths": ["/v1/responses", "/v1/chat/completions"],
+            "supported_formats": [
+                {"format": "responses", "path": "/v1/responses"},
+                {"format": "gemini", "path": "/v1beta/models/gemini:generateContent", "stream_path": "/v1beta/models/gemini:streamGenerateContent", "description": "Google Gemini API"}
+            ]
+        });
+        let info: LlmBridgeInfo = serde_json::from_value(mock_response).unwrap();
+        assert_eq!(info.api_format, "responses");
+        assert_eq!(info.path, "/v1/responses");
+        assert_eq!(info.stream_path, None);
+        assert_eq!(info.supported_formats.len(), 2);
+        assert_eq!(info.supported_formats[1].format, "gemini");
     }
 
     #[test]

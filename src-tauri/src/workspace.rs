@@ -1,3 +1,5 @@
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::io;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
@@ -56,6 +58,30 @@ impl WorkspaceRoot {
     }
 }
 
+/// Identity of the files that decide emulator/deploy eligibility.
+/// `None` hashes mean the file is missing or unreadable.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorkspaceManifestSig {
+    pub root: Option<PathBuf>,
+    pub pyproject: Option<u64>,
+    pub conf: Option<u64>,
+}
+
+pub fn manifest_sig(root: Option<&Path>) -> WorkspaceManifestSig {
+    WorkspaceManifestSig {
+        root: root.map(Path::to_path_buf),
+        pyproject: root.and_then(|path| content_sig(&path.join("pyproject.toml"))),
+        conf: root.and_then(|path| content_sig(&path.join("conf.json"))),
+    }
+}
+
+fn content_sig(path: &Path) -> Option<u64> {
+    let bytes = std::fs::read(path).ok()?;
+    let mut hasher = DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    Some(hasher.finish())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -84,6 +110,30 @@ mod tests {
             .resolve("ok.txt")
             .unwrap()
             .starts_with(workspace.path()));
+    }
+
+    #[test]
+    fn manifest_sig_tracks_pyproject_and_conf_changes() {
+        let root = tempfile_dir();
+        let empty = manifest_sig(Some(&root));
+        assert!(empty.pyproject.is_none());
+        assert!(empty.conf.is_none());
+
+        fs::write(root.join("pyproject.toml"), "[project]\nname = \"demo\"\n").unwrap();
+        let with_pyproject = manifest_sig(Some(&root));
+        assert!(with_pyproject.pyproject.is_some());
+        assert_ne!(empty, with_pyproject);
+
+        fs::write(root.join("pyproject.toml"), "[project]\nname = \"fixed\"\n").unwrap();
+        let rewritten = manifest_sig(Some(&root));
+        assert_ne!(with_pyproject.pyproject, rewritten.pyproject);
+
+        fs::write(root.join("conf.json"), "{\"type\":\"game\"}").unwrap();
+        let with_conf = manifest_sig(Some(&root));
+        assert!(with_conf.conf.is_some());
+        assert_eq!(rewritten.pyproject, with_conf.pyproject);
+        assert_ne!(rewritten, with_conf);
+        let _ = fs::remove_dir_all(root);
     }
 
     fn tempfile_dir() -> PathBuf {

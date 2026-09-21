@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { ToolCallDetails, ToolRunTimelineItem } from "./ToolRunTimelineItem";
-import type { TimelineToolRun } from "./rawTimeline";
+import { actionLabel, callDiff, ToolCallDetails, ToolRunTimelineItem } from "./ToolRunTimelineItem";
+import type { TimelineToolCall, TimelineToolRun } from "./rawTimeline";
 
 function run(status: "running" | "succeeded" | "failed"): TimelineToolRun {
   return {
@@ -40,5 +40,23 @@ describe("ToolRunTimelineItem", () => {
     expect(markup).toContain("main.py");
     expect(markup).toContain("Error</span>");
     expect(markup).toContain("permission denied");
+  });
+
+  it("renders apply_patch labels and diff counts", () => {
+    const call: TimelineToolCall = {
+      callId: "call-1",
+      toolName: "apply_patch",
+      startedAt: 1,
+      status: "succeeded",
+      durationMs: 42,
+      inputPreview: {
+        patch: "*** Begin Patch\n*** Update File: main.py\n@@\n-old\n+new\n*** End Patch"
+      },
+      resultPreview: { ok: true }
+    };
+    const markup = renderToStaticMarkup(<ToolRunTimelineItem run={{ runId: "run-1", calls: [call] }} />);
+    expect(markup).toContain("Patched main.py");
+    expect(actionLabel(call)).toBe("Patched main.py");
+    expect(callDiff(call)).toEqual({ added: 1, deleted: 1 });
   });
 });

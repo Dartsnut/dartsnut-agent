@@ -61,15 +61,15 @@ describe("transcript hydration", () => {
       kind: "tool_status",
       at: 3,
       text:
-        "Created main.py. @@tool_status_meta@@{\"callId\":\"c1\",\"toolName\":\"write_file\",\"phase\":\"result\",\"filePath\":\"main.py\",\"added\":10,\"deleted\":0}"
+        "Patched main.py. @@tool_status_meta@@{\"callId\":\"c1\",\"toolName\":\"apply_patch\",\"phase\":\"result\",\"filePath\":\"main.py\",\"added\":10,\"deleted\":0}"
     };
     const entry = transcriptLineToTimelineEntry(line, 0);
     expect(entry).toMatchObject({
       role: "status",
-      text: "Created main.py.",
+      text: "Patched main.py.",
       toolStatusMeta: {
         callId: "c1",
-        toolName: "write_file",
+        toolName: "apply_patch",
         phase: "result",
         filePath: "main.py",
         added: 10,

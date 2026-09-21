@@ -3,10 +3,11 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::projects::ProjectStore;
@@ -505,6 +506,7 @@ pub(crate) struct CustomProviderSettings {
     pub(crate) base_url: String,
     pub(crate) api_key: String,
     pub(crate) model: String,
+    pub(crate) api_format: Option<String>,
 }
 
 pub(crate) fn read_provider_settings(app: &AppHandle) -> ProviderSettingsFile {
@@ -535,6 +537,11 @@ pub fn save_provider_settings(app: AppHandle, state: State<'_, AppState>, payloa
         && (settings.custom.base_url.trim().is_empty() || settings.custom.model.trim().is_empty())
     {
         return json!({ "ok": false, "error": "baseUrl and model are required" });
+    }
+    if let Some(ref format_str) = settings.custom.api_format {
+        if format_str.parse::<crate::api_format::ApiFormat>().is_err() {
+            return json!({ "ok": false, "error": "Invalid api_format value" });
+        }
     }
     let Ok(path) = provider_file(&app) else {
         return json!({ "ok": false, "error": "app data path unavailable" });
@@ -575,19 +582,89 @@ pub fn retry_python_runtime_setup(app: AppHandle, state: State<'_, AppState>) ->
     state.runtime.start(app)
 }
 
-#[tauri::command]
-pub fn deploy_get_eligibility(state: State<'_, AppState>) -> Value {
-    let Some(root) = state
+const WORKSPACE_WATCH_INTERVAL: Duration = Duration::from_millis(250);
+
+pub(crate) fn start_workspace_monitor(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        let mut last: Option<crate::workspace::WorkspaceManifestSig> = None;
+        let mut interval = tokio::time::interval(WORKSPACE_WATCH_INTERVAL);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            interval.tick().await;
+            let state = app.state::<AppState>();
+            if state.quit_cleanup_started.load(Ordering::SeqCst) {
+                break;
+            }
+            let root = workspace_root_path(&state);
+            let sig = crate::workspace::manifest_sig(root.as_deref());
+            if last.as_ref() == Some(&sig) {
+                continue;
+            }
+            last = Some(sig);
+            publish_workspace_classification(&app);
+        }
+    });
+}
+
+pub(crate) fn publish_workspace_classification(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let _ = app.emit("deploy:eligibility-changed", workspace_eligibility(&state));
+    for scope in ["workspace", "emulator"] {
+        let _ = app.emit(
+            "widget-config:changed",
+            widget_config_for_scope(&state, scope),
+        );
+    }
+}
+
+fn workspace_root_path(state: &AppState) -> Option<PathBuf> {
+    state
         .workspace_root
         .lock()
         .ok()
         .and_then(|value| value.clone())
-    else {
+}
+
+fn workspace_eligibility(state: &AppState) -> Value {
+    eligibility_for_root(workspace_root_path(state).as_deref())
+}
+
+pub(crate) fn eligibility_for_root(root: Option<&Path>) -> Value {
+    let Some(root) = root else {
         return json!({ "ok": false, "reason": "workspace_not_selected" });
     };
     let pyproject = fs::read_to_string(root.join("pyproject.toml")).ok();
     let conf = fs::read_to_string(root.join("conf.json")).ok();
     classify_dartsnut_project_files(pyproject.as_deref(), conf.as_deref())
+}
+
+pub(crate) fn workspace_runnable(root: Option<&Path>) -> Value {
+    let status = eligibility_for_root(root);
+    if status.get("ok").and_then(Value::as_bool) != Some(true) {
+        return status;
+    }
+    let Some(root) = root else {
+        return status;
+    };
+    if !root.join("main.py").is_file() {
+        return json!({"ok":false,"reason":"missing_main_py"});
+    }
+    status
+}
+
+pub(crate) fn attach_workspace_status(root: &Path, mut value: Value) -> Value {
+    if value.get("ok").and_then(Value::as_bool) == Some(true) {
+        if let Some(object) = value.as_object_mut() {
+            object.insert("workspace".into(), workspace_runnable(Some(root)));
+        }
+    }
+    value
+}
+
+
+#[tauri::command]
+pub fn deploy_get_eligibility(state: State<'_, AppState>) -> Value {
+    workspace_eligibility(&state)
 }
 
 fn classify_dartsnut_project_files(
@@ -685,11 +762,11 @@ pub fn get_widget_config(state: State<'_, AppState>, payload: Option<Value>) -> 
     let scope = payload
         .and_then(|value| value.as_str().map(str::to_owned))
         .unwrap_or_else(|| "workspace".to_owned());
-    let workspace_root = state
-        .workspace_root
-        .lock()
-        .ok()
-        .and_then(|value| value.clone());
+    widget_config_for_scope(&state, &scope)
+}
+
+fn widget_config_for_scope(state: &AppState, scope: &str) -> Value {
+    let workspace_root = workspace_root_path(state);
     let root = if scope == "emulator" {
         state
             .emulator
@@ -719,7 +796,7 @@ pub fn get_widget_config(state: State<'_, AppState>, payload: Option<Value>) -> 
     let Ok(conf) = serde_json::from_str::<Value>(&body) else {
         return json!({"scope":scope,"status":"invalid","configKey":null,"confPath":conf_path,"message":"conf.json is invalid"});
     };
-    widget_config_snapshot(&scope, &conf_path, &conf)
+    widget_config_snapshot(scope, &conf_path, &conf)
 }
 
 #[tauri::command]
@@ -817,7 +894,11 @@ pub fn set_app_update_auto_download(
 
 #[cfg(test)]
 mod tests {
-    use super::{classify_dartsnut_project_files, widget_config_snapshot, DeployConnectionState};
+    use super::{
+        classify_dartsnut_project_files, eligibility_for_root, widget_config_snapshot,
+        workspace_runnable, DeployConnectionState,
+    };
+    use std::fs;
     use std::path::Path;
 
     const PYPROJECT: &str = r#"
@@ -889,5 +970,50 @@ dependencies = ["Py_DartsNut[extra] >= 1"]
         );
         assert_eq!(snapshot["status"], "not_widget");
         assert!(snapshot.get("fields").is_none());
+    }
+
+    #[test]
+    fn eligibility_follows_workspace_files_on_disk() {
+        let root = std::env::temp_dir().join(format!(
+            "dartsnut-eligibility-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        assert_eq!(
+            eligibility_for_root(Some(&root))["reason"],
+            "missing_pyproject"
+        );
+
+        fs::write(
+            root.join("pyproject.toml"),
+            PYPROJECT.replace("Py_DartsNut[extra] >= 1", "requests"),
+        )
+        .unwrap();
+        assert_eq!(
+            eligibility_for_root(Some(&root))["reason"],
+            "missing_pydartsnut"
+        );
+
+        fs::write(root.join("pyproject.toml"), PYPROJECT).unwrap();
+        let eligible = eligibility_for_root(Some(&root));
+        assert_eq!(eligible["ok"], true);
+        assert_eq!(eligible["projectType"], "game");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn workspace_runnable_requires_main_py_and_classifies_project() {
+        let root = std::env::temp_dir().join(format!("dartsnut-runnable-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        assert_eq!(workspace_runnable(Some(&root))["reason"], "missing_pyproject");
+        fs::write(root.join("pyproject.toml"), PYPROJECT).unwrap();
+        assert_eq!(workspace_runnable(Some(&root))["reason"], "missing_main_py");
+        fs::write(root.join("main.py"), "print('ok')\n").unwrap();
+        let game = workspace_runnable(Some(&root));
+        assert_eq!(game["ok"], true);
+        assert_eq!(game["projectType"], "game");
+        fs::write(root.join("conf.json"), r#"{"size":[128,64],"fields":[]}"#).unwrap();
+        assert_eq!(workspace_runnable(Some(&root))["projectType"], "widget");
+        let _ = fs::remove_dir_all(root);
     }
 }

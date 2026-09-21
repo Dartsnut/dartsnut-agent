@@ -938,20 +938,33 @@ type FunctionCallPreview = {
   path?: string;
 };
 
+const PATCH_FILE_HEADER = /^\*\*\* (?:Add File|Update File|Delete File): (.+)$/m;
+
+function firstPatchPath(patch: string): string | null {
+  const match = patch.match(PATCH_FILE_HEADER);
+  return match?.[1] ?? null;
+}
+
+function patchLineDiff(patch: string): { added: number; deleted: number } {
+  let added = 0;
+  let deleted = 0;
+  for (const line of patch.split(/\r?\n/)) {
+    if (line.startsWith("+++") || line.startsWith("---")) continue;
+    if (line.startsWith("+")) added += 1;
+    else if (line.startsWith("-")) deleted += 1;
+  }
+  return { added, deleted };
+}
+
 function summarizeFileToolCallDelta(event: FunctionCallPreview): string {
   const args = event.argumentsJson ?? "";
-  const trimmedPath = typeof event.path === "string" && event.path.trim() ? event.path.trim() : "file";
-  if (event.toolName === "write_file") {
-    const contentSoFar = extractPartialStringField(args, "content");
-    const lineCount = contentSoFar ? contentSoFar.split(/\r?\n/).length : 0;
-    return `Creating ${trimmedPath} +${lineCount}`;
-  }
-  if (event.toolName === "replace_in_file") {
-    const findSoFar = extractPartialStringField(args, "find");
-    const replaceSoFar = extractPartialStringField(args, "replace");
-    const findLines = findSoFar ? findSoFar.split(/\r?\n/).length : 0;
-    const replaceLines = replaceSoFar ? replaceSoFar.split(/\r?\n/).length : 0;
-    return `Editing ${trimmedPath} +${replaceLines} -${findLines}`;
+  if (event.toolName === "apply_patch") {
+    const patch = extractPartialStringField(args, "patch") ?? "";
+    const path = (typeof event.path === "string" && event.path.trim()
+      ? event.path.trim()
+      : firstPatchPath(patch)) ?? "files";
+    const { added, deleted } = patchLineDiff(patch);
+    return `Patching ${path} +${added} -${deleted}`;
   }
   return `Running ${event.toolName}…`;
 }
@@ -2010,7 +2023,12 @@ export function App() {
             : current.argumentsJson + (typeof responseEvent.delta === "string" ? responseEvent.delta : "");
           const path = extractPartialStringField(current.argumentsJson, "path");
           if (path) current.path = path;
-          if (current.toolName !== "write_file" && current.toolName !== "replace_in_file") return;
+          if (current.toolName === "apply_patch") {
+            const patch = extractPartialStringField(current.argumentsJson, "patch");
+            const header = patch ? firstPatchPath(patch) : null;
+            if (header) current.path = header;
+          }
+          if (current.toolName !== "apply_patch") return;
           clearActiveCoalescedStreamEntries();
           const key = toolStatusKey({ callId: current.callId, toolName: current.toolName, filePath: current.path });
           if (!key) return;
@@ -2804,7 +2822,8 @@ export function App() {
         custom: {
           baseUrl: custom.baseUrl,
           apiKey: custom.apiKey,
-          model: custom.model
+          model: custom.model,
+          apiFormat: custom.apiFormat
         }
       });
       setProviderSettings(saved);
@@ -3642,6 +3661,21 @@ export function App() {
                       }
                       placeholder="model-name"
                     />} />
+                  <SettingsRow title="API format" description="Protocol format for the custom endpoint." control={<select
+                      className="ui-input settings-row__input"
+                      value={providerCustom(providerSettings).apiFormat || "auto"}
+                      onChange={(event) =>
+                        setProviderSettings((prev) =>
+                          withProviderCustom(prev, (custom) => ({ ...custom, apiFormat: event.target.value as "auto" | "responses" | "chat_completion" | "claude" | "gemini" }))
+                        )
+                      }
+                    >
+                      <option value="auto">Auto (currently: Responses API)</option>
+                      <option value="responses">OpenAI Responses API</option>
+                      <option value="chat_completion">OpenAI Chat Completions</option>
+                      <option value="claude">Claude (Anthropic)</option>
+                      <option value="gemini">Gemini (Google)</option>
+                    </select>} />
                 </>
               ) : null}
               {settingsSection === "provider" ? <SettingsRow title="Save configuration" description="Apply provider changes to future requests." control={

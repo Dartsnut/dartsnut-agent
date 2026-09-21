@@ -261,6 +261,7 @@ export interface CustomProviderSettings {
   baseUrl: string;
   apiKey: string;
   model: string;
+  apiFormat?: "auto" | "responses" | "chat_completion" | "claude" | "gemini";
 }
 
 export type ProviderId = "dartsnut-llm" | "custom";
