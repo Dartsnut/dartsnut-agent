@@ -2517,6 +2517,14 @@ export function App() {
       request.chatId,
       activeChat
     );
+    const titleChatId = request.chatId;
+    if (shouldGenerateTitle && titleChatId && firstUserMessageForTitle) {
+      void api.generateChatTitle({
+        chatId: titleChatId,
+        firstUserMessage: firstUserMessageForTitle,
+        fallbackOnly: true
+      }).then(({ tree }) => setProjectTree(tree)).catch(() => undefined);
+    }
     trackAgentEvent("agent_run_started", {
       provider: providerSettings.activeProvider,
       template_mode: request.templateMode ?? "follow_up",

@@ -1548,7 +1548,16 @@ fn execute_workspace_tool_with_app(
                 .unwrap_or(200)
                 .clamp(1, 1000) as usize;
             let mut files = Vec::new();
-            collect_files(&root, &start, None, &mut files, 10_000)?;
+            if start.is_file() {
+                let rel = start
+                    .strip_prefix(&root)
+                    .unwrap_or(&start)
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                files.push(rel);
+            } else {
+                collect_files(&root, &start, None, &mut files, 10_000)?;
+            }
             let mut matches = Vec::new();
             for rel in files {
                 if matches.len() >= cap {
@@ -2135,6 +2144,22 @@ mod tests {
             std::fs::read(root.join("assets/pixellab/image-generati/image-01.png")).unwrap(),
             bytes
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn grep_files_accepts_single_file_path() {
+        let root = std::env::temp_dir().join(format!("dartsnut-grep-file-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("main.py"), "print('jump')\nprint('stay')\n").unwrap();
+        let matches = execute_workspace_tool(
+            "grep_files",
+            &root,
+            serde_json::json!({"path":"main.py","pattern":"jump"}),
+        )
+        .unwrap();
+        assert_eq!(matches["matches"][0]["path"], "main.py");
+        assert_eq!(matches["matches"][0]["line"], 1);
         let _ = std::fs::remove_dir_all(root);
     }
 

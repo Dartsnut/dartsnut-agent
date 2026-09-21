@@ -22,4 +22,8 @@ describe("initial chat title policy", () => {
     expect(shouldSetInitialChatTitle("Build a timer", undefined, null)).toBe(true);
     expect(shouldSetInitialChatTitle("  ", undefined, null)).toBe(false);
   });
+
+  it("titles a first send when the chat tree has not loaded yet", () => {
+    expect(shouldSetInitialChatTitle("Build a maze game", "chat-1", null)).toBe(true);
+  });
 });
