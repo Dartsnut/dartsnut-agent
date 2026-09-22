@@ -32,6 +32,56 @@ const PDO_NAME: &str = "pdoshm";
 const POSIX_SHM_NAME_MAX: usize = 31;
 const GIF_FPS: usize = 24;
 const GIF_MAX_FRAMES: usize = GIF_FPS * 30;
+/// pydartsnut maps hardware dart coords 1800..=39800 onto display pixels 0..=127.
+const DART_DISPLAY_MAX: i32 = 127;
+const DART_COORD_SCALE: i32 = 299;
+const DART_COORD_OFFSET: i32 = 1800;
+
+fn json_i32(value: Option<&Value>, default: i32) -> i32 {
+    match value {
+        Some(Value::Number(n)) => n
+            .as_i64()
+            .or_else(|| n.as_f64().map(|f| f as i64))
+            .unwrap_or(i64::from(default)) as i32,
+        Some(Value::String(s)) => s.parse().unwrap_or(default),
+        _ => default,
+    }
+}
+
+fn hardware_dart_coord(value: i32) -> i32 {
+    if (0..=DART_DISPLAY_MAX).contains(&value) {
+        value
+            .saturating_mul(DART_COORD_SCALE)
+            .saturating_add(DART_COORD_OFFSET)
+    } else {
+        value
+    }
+}
+
+fn dart_slot_empty(dart: (i32, i32)) -> bool {
+    dart.0 < 0 && dart.1 < 0
+}
+
+fn resolve_throw_dart_index(command: &Value, darts: &[(i32, i32); 12]) -> Result<usize, String> {
+    if command
+        .get("index")
+        .and_then(Value::as_str)
+        .is_some_and(|value| value.eq_ignore_ascii_case("next"))
+    {
+        return darts
+            .iter()
+            .copied()
+            .position(dart_slot_empty)
+            .ok_or_else(|| "all dart slots are occupied".to_owned());
+    }
+    let index = json_i32(command.get("index"), 0);
+    if (0..12).contains(&index) {
+        Ok(index as usize)
+    } else {
+        Err("Dart index out of range".to_owned())
+    }
+}
+
 fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -907,22 +957,24 @@ impl EmulatorCore {
                 })
             }
             "throw_dart" => {
-                let index = command.get("index").and_then(Value::as_i64).unwrap_or(0);
-                if !(0..12).contains(&index) {
-                    self.fail(action, "Dart index out of range");
-                    return;
-                }
-                self.darts[index as usize] = (
-                    command.get("x").and_then(Value::as_i64).unwrap_or(-1) as i32,
-                    command.get("y").and_then(Value::as_i64).unwrap_or(-1) as i32,
+                let index = match resolve_throw_dart_index(&command, &self.darts) {
+                    Ok(index) => index,
+                    Err(error) => {
+                        self.fail(action, &error);
+                        return;
+                    }
+                };
+                self.darts[index] = (
+                    hardware_dart_coord(json_i32(command.get("x"), -1)),
+                    hardware_dart_coord(json_i32(command.get("y"), -1)),
                 );
                 self.write_darts()
                     .map(|_| self.state.status = format!("Dart {} placed", index + 1))
             }
             "remove_dart_at" => {
                 let point = (
-                    command.get("x").and_then(Value::as_i64).unwrap_or(-1) as i32,
-                    command.get("y").and_then(Value::as_i64).unwrap_or(-1) as i32,
+                    hardware_dart_coord(json_i32(command.get("x"), -1)),
+                    hardware_dart_coord(json_i32(command.get("y"), -1)),
                 );
                 if let Some(dart) = self.darts.iter_mut().find(|dart| **dart == point) {
                     *dart = (-1, -1);
@@ -1800,5 +1852,30 @@ mod tests {
     fn distribution_name_normalizes_extras() {
         assert_eq!(normalize_distribution("pydartsnut>=1.2"), "pydartsnut");
         assert_eq!(normalize_distribution("pydartsnut-ce"), "pydartsnutce");
+    }
+
+    #[test]
+    fn display_pixels_convert_to_hardware_dart_coords() {
+        assert_eq!(hardware_dart_coord(0), 1800);
+        assert_eq!(hardware_dart_coord(1), 2099);
+        assert_eq!(hardware_dart_coord(127), 1800 + 127 * 299);
+        assert_eq!(hardware_dart_coord(1800), 1800);
+        assert_eq!(hardware_dart_coord(-1), -1);
+    }
+
+    #[test]
+    fn throw_dart_next_uses_first_empty_slot() {
+        let mut darts = [(-1, -1); 12];
+        darts[0] = (1800, 1800);
+        darts[1] = (2099, 2099);
+        assert_eq!(
+            resolve_throw_dart_index(&json!({"index": "next"}), &darts).unwrap(),
+            2
+        );
+        darts = [(1, 1); 12];
+        assert_eq!(
+            resolve_throw_dart_index(&json!({"index": "next"}), &darts).unwrap_err(),
+            "all dart slots are occupied"
+        );
     }
 }

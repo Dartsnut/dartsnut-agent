@@ -221,6 +221,45 @@ fn app_mutated_since(transcript: &[TranscriptLine], start: usize) -> bool {
     })
 }
 
+
+fn is_resume_prompt(prompt: &str) -> bool {
+    let trimmed = prompt
+        .trim()
+        .trim_end_matches(['.', '!', '?'])
+        .trim()
+        .to_ascii_lowercase();
+    matches!(
+        trimmed.as_str(),
+        "resume" | "continue" | "keep going" | "try again" | "go on"
+    )
+}
+
+fn last_actionable_user_prompt(transcript: &[TranscriptLine]) -> Option<&str> {
+    transcript.iter().rev().find_map(|line| {
+        if line.kind != "user" {
+            return None;
+        }
+        let text = line.text.trim();
+        if text.is_empty() || is_resume_prompt(text) {
+            None
+        } else {
+            Some(text)
+        }
+    })
+}
+
+fn resume_model_prompt(prompt: &str, transcript: &[TranscriptLine]) -> String {
+    if !is_resume_prompt(prompt) {
+        return prompt.to_owned();
+    }
+    let Some(original) = last_actionable_user_prompt(transcript) else {
+        return prompt.to_owned();
+    };
+    format!(
+        "Resume the interrupted work on this user request:\n{original}\n\nContinue from the current workspace and emulator state. Do not re-survey the project as if this were a new request. Finish the original request."
+    )
+}
+
 fn repair_prompt(user_prompt: &str, reason: &str) -> String {
     format!(
         "Continue this user request:\n{user_prompt}\n\nThe workspace is not runnable: {reason}. Make the minimum changes needed to leave the requested game or widget runnable, then finish. The user's requested behavior remains the priority; choose any tools and checks needed, and preserve unrelated files."
@@ -426,6 +465,7 @@ async fn run_prompt(
             json!({"ok":false,"failureReason":"run_expired","message":"Maximum 128 turns reached"}),
         );
     }
+    let model_prompt = resume_model_prompt(&effective_prompt, &session.transcript);
     session.turn_count += 1;
     session.transcript.push(TranscriptLine {
         kind: "user".into(),
@@ -519,7 +559,7 @@ async fn run_prompt(
             &base_url,
             &api_key,
             &model,
-            &effective_prompt,
+            &model_prompt,
             session.previous_response_id.clone(),
             workspace_root.clone(),
             cancel.clone(),
@@ -560,7 +600,7 @@ async fn run_prompt(
                             &base_url,
                             &api_key,
                             &model,
-                            &repair_prompt(&effective_prompt, &reason),
+                            &repair_prompt(&model_prompt, &reason),
                             session.previous_response_id.clone(),
                             workspace_root.clone(),
                             cancel.clone(),
@@ -886,5 +926,52 @@ mod tests {
         };
         assert!(prepare_chat_attachments(&root, &[attachment]).is_err());
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn user_line(text: &str) -> TranscriptLine {
+        TranscriptLine {
+            kind: "user".into(),
+            at: 1,
+            text: text.into(),
+            tool_name: None,
+            tool_call: None,
+        }
+    }
+
+    #[test]
+    fn resume_prompt_restates_last_real_user_request() {
+        let transcript = vec![
+            user_line("create a super mario bros game"),
+            user_line("btn_a won’t start the game. and mario won’t stop jumping"),
+            TranscriptLine {
+                kind: "tool".into(),
+                at: 2,
+                text: "grep_files succeeded".into(),
+                tool_name: Some("grep_files".into()),
+                tool_call: None,
+            },
+        ];
+        let prompt = resume_model_prompt("Resume", &transcript);
+        assert!(prompt.contains("btn_a won’t start the game"));
+        assert!(prompt.contains("won’t stop jumping"));
+        assert!(!prompt.contains("create a super mario bros game"));
+        assert_eq!(resume_model_prompt("keep going", &transcript), prompt);
+    }
+
+    #[test]
+    fn resume_prompt_skips_prior_resume_messages() {
+        let transcript = vec![user_line("fix the jump input"), user_line("resume")];
+        let prompt = resume_model_prompt("Resume", &transcript);
+        assert!(prompt.contains("fix the jump input"));
+    }
+
+    #[test]
+    fn ordinary_prompts_are_unchanged() {
+        let transcript = vec![user_line("create a super mario bros game")];
+        assert_eq!(
+            resume_model_prompt("mario jumps are too low", &transcript),
+            "mario jumps are too low"
+        );
+        assert_eq!(resume_model_prompt("Resume", &[]), "Resume");
     }
 }

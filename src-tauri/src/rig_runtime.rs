@@ -534,7 +534,7 @@ fn workspace_tools_with_context(root: PathBuf, app: Option<AppHandle>) -> Vec<Dy
                 "observe_emulator",
                 "Observe latest emulator frame and state.",
             ),
-            ("control_emulator_input", "Drive emulator input actions."),
+            ("control_emulator_input", "Drive emulator buttons and darts. Prefer tap_button so the press is released. Button names: A, B, UP, DOWN, LEFT, RIGHT. throw_dart x/y are display pixels 0-127; index is 0-11 or next."),
             ("run_emulator_scenario", "Run bounded emulator scenario."),
             ("get_emulator_logs", "Read recent emulator logs."),
             (
@@ -557,10 +557,45 @@ fn workspace_tools_with_context(root: PathBuf, app: Option<AppHandle>) -> Vec<Dy
                     serde_json::json!({"type":"object","properties":{"include_png":{"type":"boolean"},"include_hardware_mockup":{"type":"boolean"},"wait_for_frame_ms":{"type":"number"},"max_log_lines":{"type":"number"}}})
                 }
                 "control_emulator_input" => {
-                    serde_json::json!({"type":"object","properties":{"action":{"type":"object"}},"required":["action"]})
+                    serde_json::json!({
+                        "type":"object",
+                        "properties":{
+                            "action":{
+                                "type":"object",
+                                "properties":{
+                                    "type":{"type":"string","enum":["tap_button","set_button","throw_dart","remove_dart","clear_darts","sequence"]},
+                                    "button":{"type":"string","enum":["A","B","UP","DOWN","LEFT","RIGHT"]},
+                                    "pressed":{"type":"boolean"},
+                                    "duration_ms":{"type":"number"},
+                                    "index":{"type":"string","description":"0-11 or next"},
+                                    "x":{"type":"number"},
+                                    "y":{"type":"number"},
+                                    "actions":{"type":"array","items":{"type":"object","properties":{"type":{"type":"string"},"button":{"type":"string"},"pressed":{"type":"boolean"},"duration_ms":{"type":"number"},"index":{"type":"string"},"x":{"type":"number"},"y":{"type":"number"},"actions":{"type":"array","items":{"type":"object"}}}}}
+                                },
+                                "required":["type"]
+                            }
+                        }
+                    })
                 }
                 "run_emulator_scenario" => {
-                    serde_json::json!({"type":"object","properties":{"steps":{"type":"array"},"timeout_ms":{"type":"number"}},"required":["steps"]})
+                    serde_json::json!({
+                        "type":"object",
+                        "properties":{
+                            "steps":{
+                                "type":"array",
+                                "items":{
+                                    "type":"object",
+                                    "properties":{
+                                        "type":{"type":"string"},
+                                        "ms":{"type":"number"},
+                                        "action":{"type":"object"}
+                                    }
+                                }
+                            },
+                            "timeout_ms":{"type":"number"}
+                        },
+                        "required":["steps"]
+                    })
                 }
                 "get_emulator_logs" => {
                     serde_json::json!({"type":"object","properties":{"max_lines":{"type":"number"}}})
@@ -647,29 +682,7 @@ async fn execute_host_tool(
             Ok(serde_json::json!({"ok":true,"message":"Emulator reloaded"}))
         }
         "control_emulator_input" => {
-            let action = args.get("action").cloned().ok_or("action is required")?;
-            let action_type = action.get("type").and_then(Value::as_str).unwrap_or("");
-            let command = match action_type {
-                "throw_dart" => {
-                    serde_json::json!({"type":"throw_dart","index":action.get("index"),"x":action.get("x"),"y":action.get("y")})
-                }
-                "remove_dart" => {
-                    serde_json::json!({"type":"remove_dart_at","x":action.get("x"),"y":action.get("y")})
-                }
-                "clear_darts" => serde_json::json!({"type":"clear_darts"}),
-                "set_button" => {
-                    serde_json::json!({"type":"set_button","button":action.get("button"),"pressed":action.get("pressed")})
-                }
-                "tap_button" => {
-                    serde_json::json!({"type":"set_button","button":action.get("button"),"pressed":true})
-                }
-                _ => return Ok(serde_json::json!({"ok":false,"error":"unsupported input action"})),
-            };
-            state
-                .emulator
-                .send(app, Some(workspace_root), command)
-                .await?;
-            Ok(serde_json::json!({"ok":true}))
+            execute_control_emulator_input(app, workspace_root, &args).await
         }
         "run_emulator_scenario" => {
             let steps = args
@@ -1288,30 +1301,139 @@ async fn execute_control_emulator_input(
     workspace_root: &Path,
     args: &Value,
 ) -> Result<Value, String> {
-    let state = app.state::<crate::commands::AppState>();
     let action = args.get("action").cloned().unwrap_or_else(|| args.clone());
-    let action_type = action.get("type").and_then(Value::as_str).unwrap_or("");
-    let command = match action_type {
-        "throw_dart" => {
-            serde_json::json!({"type":"throw_dart","index":action.get("index"),"x":action.get("x"),"y":action.get("y")})
-        }
-        "remove_dart" => {
-            serde_json::json!({"type":"remove_dart_at","x":action.get("x"),"y":action.get("y")})
-        }
-        "clear_darts" => serde_json::json!({"type":"clear_darts"}),
-        "set_button" => {
-            serde_json::json!({"type":"set_button","button":action.get("button"),"pressed":action.get("pressed")})
-        }
-        "tap_button" => {
-            serde_json::json!({"type":"set_button","button":action.get("button"),"pressed":true})
-        }
-        _ => return Ok(serde_json::json!({"ok":false,"error":"unsupported input action"})),
+    let steps = match plan_emulator_input(&action, 0) {
+        Ok(steps) => steps,
+        Err(reject) => return Ok(reject),
     };
-    state
-        .emulator
-        .send(app, Some(workspace_root), command)
-        .await?;
+    let state = app.state::<crate::commands::AppState>();
+    for step in steps {
+        state
+            .emulator
+            .send(app, Some(workspace_root), step.command)
+            .await?;
+        if step.wait_after_ms > 0 {
+            sleep(Duration::from_millis(step.wait_after_ms)).await;
+        }
+    }
     Ok(serde_json::json!({"ok":true}))
+}
+
+const TAP_BUTTON_DEFAULT_MS: u64 = 80;
+const TAP_BUTTON_MIN_MS: u64 = 50;
+const TAP_BUTTON_MAX_MS: u64 = 1_000;
+const THROW_DART_SETTLE_MS: u64 = 150;
+const MAX_INPUT_PLAN_DEPTH: usize = 4;
+const MAX_INPUT_PLAN_STEPS: usize = 30;
+
+struct EmulatorInputStep {
+    command: Value,
+    wait_after_ms: u64,
+}
+
+fn json_u64(value: Option<&Value>, default: u64) -> u64 {
+    value
+        .and_then(|v| v.as_u64().or_else(|| v.as_f64().map(|n| n as u64)))
+        .unwrap_or(default)
+}
+
+fn normalize_emulator_button(value: Option<&Value>) -> Option<String> {
+    let raw = value?.as_str()?.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    let upper = raw.to_ascii_uppercase();
+    let name = upper.strip_prefix("BTN_").unwrap_or(&upper);
+    matches!(name, "A" | "B" | "UP" | "DOWN" | "LEFT" | "RIGHT").then(|| name.to_owned())
+}
+
+fn tap_duration_ms(action: &Value) -> u64 {
+    json_u64(action.get("duration_ms"), TAP_BUTTON_DEFAULT_MS)
+        .clamp(TAP_BUTTON_MIN_MS, TAP_BUTTON_MAX_MS)
+}
+
+fn plan_emulator_input(action: &Value, depth: usize) -> Result<Vec<EmulatorInputStep>, Value> {
+    if depth > MAX_INPUT_PLAN_DEPTH {
+        return Err(serde_json::json!({"ok":false,"error":"input sequence is nested too deeply"}));
+    }
+    let action_type = action.get("type").and_then(Value::as_str).unwrap_or("");
+    let steps = match action_type {
+        "throw_dart" => vec![EmulatorInputStep {
+            command: serde_json::json!({
+                "type":"throw_dart",
+                "index": action.get("index"),
+                "x": action.get("x"),
+                "y": action.get("y"),
+            }),
+            wait_after_ms: THROW_DART_SETTLE_MS,
+        }],
+        "remove_dart" => vec![EmulatorInputStep {
+            command: serde_json::json!({
+                "type":"remove_dart_at",
+                "x": action.get("x"),
+                "y": action.get("y"),
+            }),
+            wait_after_ms: 0,
+        }],
+        "clear_darts" => vec![EmulatorInputStep {
+            command: serde_json::json!({"type":"clear_darts"}),
+            wait_after_ms: 0,
+        }],
+        "set_button" if action.get("pressed").is_none() => {
+            return plan_emulator_input(
+                &serde_json::json!({
+                    "type":"tap_button",
+                    "button": action.get("button"),
+                    "duration_ms": action.get("duration_ms"),
+                }),
+                depth,
+            );
+        }
+        "set_button" => {
+            let Some(button) = normalize_emulator_button(action.get("button")) else {
+                return Err(serde_json::json!({"ok":false,"error":"unknown button"}));
+            };
+            vec![EmulatorInputStep {
+                command: serde_json::json!({
+                    "type":"set_button",
+                    "button": button,
+                    "pressed": action.get("pressed").and_then(Value::as_bool).unwrap_or(false),
+                }),
+                wait_after_ms: 0,
+            }]
+        }
+        "tap_button" | "tap" | "press" => {
+            let Some(button) = normalize_emulator_button(action.get("button")) else {
+                return Err(serde_json::json!({"ok":false,"error":"unknown button"}));
+            };
+            let duration_ms = tap_duration_ms(action);
+            vec![
+                EmulatorInputStep {
+                    command: serde_json::json!({"type":"set_button","button":button,"pressed":true}),
+                    wait_after_ms: duration_ms,
+                },
+                EmulatorInputStep {
+                    command: serde_json::json!({"type":"set_button","button":button,"pressed":false}),
+                    wait_after_ms: 0,
+                },
+            ]
+        }
+        "sequence" => {
+            let Some(actions) = action.get("actions").and_then(Value::as_array) else {
+                return Err(serde_json::json!({"ok":false,"error":"sequence requires actions"}));
+            };
+            let mut planned = Vec::new();
+            for child in actions {
+                planned.extend(plan_emulator_input(child, depth + 1)?);
+            }
+            planned
+        }
+        _ => return Err(serde_json::json!({"ok":false,"error":"unsupported input action"})),
+    };
+    if steps.len() > MAX_INPUT_PLAN_STEPS {
+        return Err(serde_json::json!({"ok":false,"error":"input sequence exceeds 30 steps"}));
+    }
+    Ok(steps)
 }
 
 const SKILL_IDS: &[&str] = &[
@@ -2314,5 +2436,49 @@ mod tests {
                 .is_err()
         );
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn tap_button_presses_then_releases() {
+        let steps = plan_emulator_input(&serde_json::json!({"type":"tap_button","button":"btn_a"}), 0)
+            .unwrap();
+        assert_eq!(steps.len(), 2);
+        assert_eq!(
+            steps[0].command,
+            serde_json::json!({"type":"set_button","button":"A","pressed":true})
+        );
+        assert_eq!(steps[0].wait_after_ms, TAP_BUTTON_DEFAULT_MS);
+        assert_eq!(
+            steps[1].command,
+            serde_json::json!({"type":"set_button","button":"A","pressed":false})
+        );
+        assert_eq!(steps[1].wait_after_ms, 0);
+    }
+
+    #[test]
+    fn set_button_without_pressed_taps() {
+        let steps = plan_emulator_input(&serde_json::json!({"type":"set_button","button":"UP"}), 0)
+            .unwrap();
+        assert_eq!(steps.len(), 2);
+        assert_eq!(steps[0].command["pressed"], true);
+        assert_eq!(steps[1].command["pressed"], false);
+    }
+
+    #[test]
+    fn sequence_flattens_nested_actions() {
+        let steps = plan_emulator_input(
+            &serde_json::json!({
+                "type":"sequence",
+                "actions":[
+                    {"type":"tap_button","button":"A","duration_ms":50},
+                    {"type":"throw_dart","index":"next","x":32,"y":48}
+                ]
+            }),
+            0,
+        )
+        .unwrap();
+        assert_eq!(steps.len(), 3);
+        assert_eq!(steps[2].command["type"], "throw_dart");
+        assert_eq!(steps[2].wait_after_ms, THROW_DART_SETTLE_MS);
     }
 }
