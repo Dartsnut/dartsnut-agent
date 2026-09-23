@@ -120,7 +120,7 @@ body {
   box-shadow: -8px 0 28px rgba(0, 0, 0, 0.18), var(--shadow-inset-subtle);
 }
 
-/* Windows caption controls occupy a transparent overlay band above the content. */
+/* Keep workspace content below the native Windows caption area. */
 :root[data-platform="win32"] .main-workspace-panel {
   margin-top: var(--window-control-inset-top);
 }
