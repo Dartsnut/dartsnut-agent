@@ -1,11 +1,14 @@
 # Live Updates
 
-Dartsnut Agent uses the Tauri 2 updater plugin with the generic provider. The
-production endpoint is supplied through `DARTSNUT_UPDATER_ENDPOINT` in the
-ignored `.env.release.local` file and injected by `tauri.release.conf.json`.
+Dartsnut Agent uses the Tauri 2 updater plugin with the generic provider.
+The release build wrapper reads `DARTSNUT_UPDATER_ENDPOINT` and appends a
+concrete updater config layer before Tauri builds the app. Local releases read
+that public setting from the ignored `.env.release.local`; CI sets it
+explicitly. The endpoint is not a secret and must be present before a release
+build starts.
 
 ```text
-https://updates.example.com/agent-update/latest-{{target}}.json
+https://dartsnutstore.oss-cn-hongkong.aliyuncs.com/agent-update/latest-{{target}}.json
 ```
 
 Tauri resolves `{{target}}` to `darwin` or `windows`. No dedicated update

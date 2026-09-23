@@ -61,11 +61,11 @@ test("releaseTargetForPlatform maps host package command and rejects unsupported
   assert.throws(() => helpers.releaseTargetForPlatform("linux"), /Unsupported release platform/);
 });
 
-test("Tauri updater config selects platform-specific JSON metadata", () => {
+test("Tauri updater endpoint is injected by the release build wrapper", () => {
   const config = JSON.parse(fs.readFileSync("src-tauri/tauri.conf.json", "utf8"));
   assert.equal(config.plugins.updater.endpoints, undefined);
   const releaseConfig = JSON.parse(fs.readFileSync("src-tauri/tauri.release.conf.json", "utf8"));
-  assert.deepEqual(releaseConfig.plugins.updater.endpoints, ["${DARTSNUT_UPDATER_ENDPOINT}"]);
+  assert.equal(releaseConfig.plugins, undefined);
 });
 
 test("collectTauriArtifacts selects only exact-version signed Tauri artifacts", () => {
