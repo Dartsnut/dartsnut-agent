@@ -85,6 +85,70 @@ body {
   color: rgba(0, 0, 0, 0.72);
 }
 
+.window-controls {
+  z-index: 1;
+  grid-column: 3;
+  justify-self: end;
+  display: inline-flex;
+  height: 32px;
+  align-items: stretch;
+  pointer-events: auto;
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+.window-control {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 46px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #fff;
+  cursor: default;
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+.window-controls--windows .window-control:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+.window-controls--windows .window-control:active {
+  background: rgba(255, 255, 255, 0.04);
+}
+[data-theme="light"] .window-controls--windows .window-control { color: rgba(0, 0, 0, 0.9); }
+[data-theme="light"] .window-controls--windows .window-control:hover { background: rgba(0, 0, 0, 0.05); }
+[data-theme="light"] .window-controls--windows .window-control:active { background: rgba(0, 0, 0, 0.03); }
+.window-controls--windows .window-control--close:hover {
+  background: #c42b1c;
+  color: #fff;
+}
+.window-controls--windows .window-control--close:active { background: rgba(196, 43, 28, 0.9); color: #fff; }
+
+.window-controls--gnome {
+  height: auto;
+  margin-right: 10px;
+  align-items: center;
+  gap: 13px;
+}
+.window-controls--gnome .window-control {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: #373737;
+  color: #fff;
+}
+.window-controls--gnome .window-control:hover { background: #424242; }
+.window-controls--gnome .window-control:active { background: #565656; }
+.window-controls--gnome .window-control--minimize svg,
+.window-controls--gnome .window-control--close svg { width: 8px; height: 8px; }
+.window-controls--gnome .window-control--maximize svg { width: 8px; height: 8px; }
+[data-theme="light"] .window-controls--gnome .window-control { background: #dadada; color: #3d3d3d; }
+[data-theme="light"] .window-controls--gnome .window-control:hover { background: #d1d1d1; }
+[data-theme="light"] .window-controls--gnome .window-control:active { background: #bfbfbf; }
 
 .workspace-header {
   position: absolute;
@@ -96,7 +160,7 @@ body {
   pointer-events: none;
 }
 
-/* Keep the side-menu toggle aligned after native macOS traffic lights. */
+/* Keep the side-menu toggle clear of native macOS traffic lights. */
 :root[data-platform="darwin"] {
   --chrome-margin-inline-start: 80px;
 }
@@ -120,7 +184,7 @@ body {
   box-shadow: -8px 0 28px rgba(0, 0, 0, 0.18), var(--shadow-inset-subtle);
 }
 
-/* Keep workspace content below the native Windows caption area. */
+/* Windows caption controls occupy a transparent overlay band above the content. */
 :root[data-platform="win32"] .main-workspace-panel {
   margin-top: var(--window-control-inset-top);
 }
