@@ -494,8 +494,7 @@ pub fn generate_chat_title(
 }
 #[tauri::command]
 pub fn get_window_chrome_insets() -> Value {
-    let top = if cfg!(target_os = "windows") { 32 } else { 0 };
-    json!({"top":top,"left":0,"right":0,"bottom":0})
+    json!({"top":0,"left":0,"right":0,"bottom":0})
 }
 #[tauri::command]
 pub async fn install_app_update_now(

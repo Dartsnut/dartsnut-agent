@@ -122,7 +122,6 @@ import {
 import { ToolRunTimelineItem } from "./ToolRunTimelineItem";
 import { applyTheme, resolveThemeFromEnvironment, type ThemeId } from "./theme";
 import { useWindowChromeInsets } from "./useWindowChromeInsets";
-import { WindowControls } from "./WindowControls";
 import { startTauriAppUpdateCheck } from "./appUpdateStartup";
 import {
   chatPaneRatioFromWidth,
@@ -959,6 +958,7 @@ function summarizeFileToolCallDelta(event: FunctionCallPreview): string {
 
 export function App() {
   useWindowChromeInsets();
+  const isMacOS = typeof navigator !== "undefined" && /Macintosh|Mac OS X/i.test(navigator.userAgent);
 
 
   useLayoutEffect(() => {
@@ -2996,9 +2996,7 @@ export function App() {
       aria-busy={submissionLock.active}
       onContextMenu={(event) => event.preventDefault()}
     >
-      <div className="app-titlebar" data-tauri-drag-region>
-        <WindowControls />
-      </div>
+      {isMacOS ? <div className="app-titlebar" data-tauri-drag-region /> : null}
       <header
         className="workspace-header flex min-h-10 items-center gap-2 [app-region:drag] [-webkit-app-region:drag]"
         data-tauri-drag-region

@@ -20,7 +20,7 @@
         "minWidth": 1320,
         "minHeight": 860,
         "transparent": true,
-        "decorations": false,
+        "decorations": true,
         "shadow": true,
         "resizable": true,
         "visible": true

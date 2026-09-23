@@ -182,9 +182,6 @@ pub fn run() {
             agent::reset_workspace_session
         ])
         .setup(|app| {
-            if let Some(window) = app.get_webview_window("main") {
-                window.set_decorations(false)?;
-            }
             let handle = app.handle().clone();
             let runtime = handle.state::<commands::AppState>().runtime.clone();
             runtime.start(handle);
