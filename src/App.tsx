@@ -959,6 +959,7 @@ function summarizeFileToolCallDelta(event: FunctionCallPreview): string {
 
 export function App() {
   useWindowChromeInsets();
+  const isMacOS = typeof navigator !== "undefined" && /Macintosh|Mac OS X/i.test(navigator.userAgent);
 
 
   useLayoutEffect(() => {
@@ -2997,7 +2998,7 @@ export function App() {
       onContextMenu={(event) => event.preventDefault()}
     >
       <div className="app-titlebar" data-tauri-drag-region>
-        <WindowControls />
+        {!isMacOS ? <WindowControls /> : null}
       </div>
       <header
         className="workspace-header flex min-h-10 items-center gap-2 [app-region:drag] [-webkit-app-region:drag]"

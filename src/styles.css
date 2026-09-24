@@ -122,6 +122,12 @@ body {
 [data-theme="light"] .window-controls--windows .window-control { color: rgba(0, 0, 0, 0.9); }
 [data-theme="light"] .window-controls--windows .window-control:hover { background: rgba(0, 0, 0, 0.05); }
 [data-theme="light"] .window-controls--windows .window-control:active { background: rgba(0, 0, 0, 0.03); }
+.window-controls--windows {
+  align-self: start;
+}
+.window-controls--windows .window-control--close {
+  border-top-right-radius: var(--window-corner-radius);
+}
 .window-controls--windows .window-control--close:hover {
   background: #c42b1c;
   color: #fff;
@@ -149,46 +155,6 @@ body {
 [data-theme="light"] .window-controls--gnome .window-control { background: #dadada; color: #3d3d3d; }
 [data-theme="light"] .window-controls--gnome .window-control:hover { background: #d1d1d1; }
 [data-theme="light"] .window-controls--gnome .window-control:active { background: #bfbfbf; }
-.window-controls--macos {
-  grid-column: 1;
-  justify-self: start;
-  height: 100%;
-  align-items: center;
-  gap: 8px;
-  padding: 0 12px;
-}
-
-.window-controls--macos .window-control {
-  position: relative;
-  width: 12px;
-  height: 12px;
-  border: 1px solid rgba(0, 0, 0, 0.12);
-  border-radius: 50%;
-  color: rgba(0, 0, 0, 0.6);
-}
-
-.window-controls--macos .window-control__glyph {
-  display: none;
-  align-items: center;
-  justify-content: center;
-  line-height: 0;
-}
-
-/* macOS shows traffic-light glyphs only while the group is hovered. */
-.window-controls--macos:hover .window-control__glyph,
-.window-controls--macos .window-control:focus-visible .window-control__glyph {
-  display: inline-flex;
-}
-.window-controls--macos .window-control:active {
-  color: rgba(0, 0, 0, 0.6);
-}
-.window-controls--macos .window-control--close { background: #ff544d; }
-.window-controls--macos .window-control--minimize { background: #ffbd2e; }
-.window-controls--macos .window-control--maximize { background: #28c93f; }
-.window-controls--macos .window-control--close:active { background: #bf403a; }
-.window-controls--macos .window-control--minimize:active { background: #bf9122; }
-.window-controls--macos .window-control--maximize:active { background: #1e9930; }
-[data-theme="dark"] .window-controls--macos .window-control { border: 0; }
 
 .workspace-header {
   position: absolute;
@@ -200,9 +166,13 @@ body {
   pointer-events: none;
 }
 
-/* Keep the side-menu toggle clear of custom macOS traffic lights. */
+/* Keep the side-menu toggle clear of native macOS traffic lights. */
 :root[data-platform="darwin"] {
-  --chrome-margin-inline-start: 78px;
+  --chrome-margin-inline-start: 80px;
+}
+
+:root[data-platform="darwin"] .workspace-header {
+  transform: translateY(5px);
 }
 
 .workspace-header > * {

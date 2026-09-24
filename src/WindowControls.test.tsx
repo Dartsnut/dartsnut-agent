@@ -20,17 +20,6 @@ afterEach(() => {
 });
 
 describe("WindowControls", () => {
-  it("renders macOS traffic lights in native order", () => {
-    Object.defineProperty(globalThis, "navigator", {
-      configurable: true,
-      value: { userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)" }
-    });
-
-    const markup = renderToStaticMarkup(<WindowControls />);
-    expect(markup).toContain("window-controls--macos");
-    expect(markup.indexOf('aria-label="Close"')).toBeLessThan(markup.indexOf('aria-label="Minimize"'));
-    expect(markup.indexOf('aria-label="Minimize"')).toBeLessThan(markup.indexOf('aria-label="Enter full screen"'));
-  });
 
   it("renders Windows controls with reference SVG icons", () => {
     Object.defineProperty(globalThis, "navigator", {
