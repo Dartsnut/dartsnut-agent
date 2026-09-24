@@ -122,6 +122,9 @@ body {
 [data-theme="light"] .window-controls--windows .window-control { color: rgba(0, 0, 0, 0.9); }
 [data-theme="light"] .window-controls--windows .window-control:hover { background: rgba(0, 0, 0, 0.05); }
 [data-theme="light"] .window-controls--windows .window-control:active { background: rgba(0, 0, 0, 0.03); }
+.window-controls--windows {
+  align-self: start;
+}
 .window-controls--windows .window-control--close:hover {
   background: #c42b1c;
   color: #fff;
