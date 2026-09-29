@@ -23,7 +23,8 @@ Cargo replacement surface:
 - Official Tauri plugins are registered for updater, opener, dialogs,
   clipboard, filesystem, store, window state, and process control.
 
-Updater endpoint is configured in `tauri.conf.json`; release builds must set
+Updater endpoints are injected by the release and development wrappers from
+`DARTSNUT_UPDATER_ENDPOINT`. Release builds must also set
 `TAURI_SIGNING_PUBLIC_KEY`, `TAURI_SIGNING_PRIVATE_KEY`, and
 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. The public key is injected into the
 runtime plugin and signatures are verified before installation.

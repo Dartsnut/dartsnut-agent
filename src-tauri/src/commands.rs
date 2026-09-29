@@ -71,7 +71,6 @@ pub struct PendingUpdate {
     pub bytes: Option<Vec<u8>>,
     pub checking: bool,
     pub downloading: bool,
-    pub auto_download: bool,
 }
 
 impl Default for AppState {
@@ -97,7 +96,6 @@ impl Default for AppState {
                 bytes: None,
                 checking: false,
                 downloading: false,
-                auto_download: true,
             }),
             provider_settings: Mutex::new(ProviderSettingsFile::default()),
             quit_cleanup_started: AtomicBool::new(false),
@@ -866,7 +864,6 @@ pub fn get_app_update_auto_download(app: AppHandle) -> bool {
 #[tauri::command]
 pub fn set_app_update_auto_download(
     app: AppHandle,
-    state: State<'_, AppState>,
     payload: Option<Value>,
 ) -> bool {
     let enabled = payload
@@ -885,9 +882,6 @@ pub fn set_app_update_auto_download(
         if let Ok(body) = serde_json::to_vec_pretty(&json!({"autoDownload": enabled})) {
             let _ = fs::write(&tmp, body).and_then(|_| fs::rename(&tmp, &path));
         }
-    }
-    if let Ok(mut pending) = state.update.lock() {
-        pending.auto_download = enabled;
     }
     enabled
 }

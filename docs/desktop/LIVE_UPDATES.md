@@ -1,11 +1,11 @@
 # Live Updates
 
 Dartsnut Agent uses the Tauri 2 updater plugin with the generic provider.
-The release build wrapper reads `DARTSNUT_UPDATER_ENDPOINT` and appends a
-concrete updater config layer before Tauri builds the app. Local releases read
-that public setting from the ignored `.env.release.local`; CI sets it
-explicitly. The endpoint is not a secret and must be present before a release
-build starts.
+The release and development wrappers read `DARTSNUT_UPDATER_ENDPOINT` and
+append a concrete updater config layer before Tauri builds or runs the app.
+Local invocations read that public setting from the ignored `.env.release.local`;
+CI sets it explicitly for releases. The endpoint is not a secret and must be
+present before a release build or `pnpm dev` starts.
 
 ```text
 https://dartsnutstore.oss-cn-hongkong.aliyuncs.com/agent-update/latest-{{target}}.json
@@ -14,18 +14,19 @@ https://dartsnutstore.oss-cn-hongkong.aliyuncs.com/agent-update/latest-{{target}
 Tauri resolves `{{target}}` to `darwin` or `windows`. No dedicated update
 server is required. The host only needs to serve the release files over HTTPS.
 
-The desktop app checks for updates on launch but does not download them by
-default. Tauri performs this check from the renderer after its update event
-listener is registered. When an update is available, the app offers a manual
-download and a checkbox to enable
-automatic downloads. That preference is stored in the Tauri app-data directory.
-With automatic downloads enabled, updater behavior matches the normal Tauri
-updater flow; installation still waits for the user to confirm and relaunch.
+The desktop app checks for updates on launch after registering its status
+listener. Automatic downloads are enabled by default; when an update is found,
+it downloads in the background and then asks the user to confirm installation
+and relaunch. Turning automatic downloads off keeps the update available for a
+manual download or a later check. The preference is stored in the Tauri
+app-data directory. Skipping the popup only dismisses it for that version;
+Settings continues to show the version and an Update action. Update downloads
+an available version or installs one already ready, matching the popup action.
 
 ## Local UI preview
 
-Tauri development builds check the configured platform feed, so an older debug
-build can verify the live update path. `pnpm dev` uses the real feed.
+`pnpm dev` injects the configured platform feed from `DARTSNUT_UPDATER_ENDPOINT`
+or `.env.release.local`. Direct `tauri dev` does not add that updater endpoint.
 
 ## Required Artifacts
 

@@ -124,6 +124,8 @@ import { applyTheme, resolveThemeFromEnvironment, type ThemeId } from "./theme";
 import { useWindowChromeInsets } from "./useWindowChromeInsets";
 import { WindowControls } from "./WindowControls";
 import { startTauriAppUpdateCheck } from "./appUpdateStartup";
+import { createAutomaticAppUpdateDownloader } from "./appUpdateAutoDownload";
+import { appUpdateSettingsModel } from "./appUpdateSettings";
 import {
   chatPaneRatioFromWidth,
   chatPaneWidthFromRatio,
@@ -1457,6 +1459,15 @@ export function App() {
     });
   }, [api]);
 
+  const autoDownloadAvailableUpdate = useMemo(
+    () => createAutomaticAppUpdateDownloader(handleDownloadAppUpdate),
+    [handleDownloadAppUpdate]
+  );
+
+  useEffect(() => {
+    autoDownloadAvailableUpdate(appUpdate, autoUpdateEnabled);
+  }, [appUpdate, autoUpdateEnabled, autoDownloadAvailableUpdate]);
+
   const handleAutoUpdateChange = useCallback((enabled: boolean) => {
     const persistAutoUpdate = api.setAppUpdateAutoDownload;
     setAutoUpdateEnabled(enabled);
@@ -2322,6 +2333,17 @@ export function App() {
     appUpdate.dismissedVersion !== appUpdate.availableVersion
       ? appUpdate
       : null;
+
+  const appUpdateSettings = appUpdateSettingsModel(
+    appUpdate,
+    appUpdate?.error ?? null,
+    appUpdate?.installing ?? false
+  );
+  const appUpdateSettingsActions = {
+    check: handleCheckAppUpdate,
+    download: handleDownloadAppUpdate,
+    install: handleInstallAppUpdateNow
+  };
 
   useEffect(() => {
     setDeployDrawerOpen(false);
@@ -3583,16 +3605,19 @@ export function App() {
                     <SettingsRow title="Automatically download updates" description="Check for new versions on launch and download them automatically. Installation still requires your confirmation." control={
                       <SettingsSwitch checked={autoUpdateEnabled} label="Automatically download updates" analyticsId="settings_auto_update_toggle" onChange={handleAutoUpdateChange} />
                     } />
-                    <SettingsRow title="App updates" description={appUpdate?.kind === "not_available" ? appUpdate.message ?? "Dartsnut Agent is up to date." : appUpdate?.kind === "error" ? appUpdate.message ?? "Update check failed." : "Check for a newer desktop version."} control={<button
-                      type="button"
-                      className="ui-btn-secondary min-h-8 px-3 text-xs disabled:cursor-not-allowed disabled:opacity-55"
-                      disabled={appUpdate?.kind === "checking" || appUpdate?.kind === "downloading" || appUpdate?.kind === "ready"}
-                      onClick={handleCheckAppUpdate}
-                      data-analytics-id="settings_check_update"
-                      data-analytics-area="settings"
-                    >
-                      {appUpdate?.kind === "checking" ? "Checking..." : "Check for updates"}
-                    </button>} />
+                    <SettingsRow
+                      title="App updates"
+                      description={appUpdateSettings.description}
+                      control={<button
+                        type="button"
+                        className="ui-btn-secondary min-h-8 px-3 text-xs disabled:cursor-not-allowed disabled:opacity-55"
+                        disabled={appUpdateSettings.disabled}
+                        onClick={appUpdateSettingsActions[appUpdateSettings.action]}
+                        data-analytics-id={appUpdateSettings.action === "check" ? "settings_check_update" : appUpdateSettings.action === "download" ? "app_update_download" : "app_update_install"}
+                        data-analytics-area={appUpdateSettings.action === "check" ? "settings" : "update"}
+                      >
+                        {appUpdateSettings.label}
+                      </button>} />
                   </SettingsGroup>
                   <h2 className="settings-group-heading">Privacy</h2>
                   <SettingsGroup>
