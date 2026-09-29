@@ -1,11 +1,10 @@
 # Live Updates
 
 Dartsnut Agent uses the Tauri 2 updater plugin with the generic provider.
-The release and development wrappers read `DARTSNUT_UPDATER_ENDPOINT` and
-append a concrete updater config layer before Tauri builds or runs the app.
-Local invocations read that public setting from the ignored `.env.release.local`;
-CI sets it explicitly for releases. The endpoint is not a secret and must be
-present before a release build or `pnpm dev` starts.
+The release and development wrappers read `DARTSNUT_UPDATER_ENDPOINT` from the
+repository-root `.env`; exported process environment values take precedence.
+The `.env` file is ignored by Git. CI supplies its values through the process
+environment.
 
 ```text
 https://dartsnutstore.oss-cn-hongkong.aliyuncs.com/agent-update/latest-{{target}}.json
@@ -25,8 +24,8 @@ an available version or installs one already ready, matching the popup action.
 
 ## Local UI preview
 
-`pnpm dev` injects the configured platform feed from `DARTSNUT_UPDATER_ENDPOINT`
-or `.env.release.local`. Direct `tauri dev` does not add that updater endpoint.
+`pnpm dev` injects the configured platform feed from `.env`. Direct `tauri dev`
+does not add that updater endpoint.
 
 ## Required Artifacts
 

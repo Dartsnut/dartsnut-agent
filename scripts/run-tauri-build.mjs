@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 
 const scriptPath = fileURLToPath(import.meta.url);
 const repoRoot = path.resolve(path.dirname(scriptPath), "..");
-const defaultEnvPath = path.join(repoRoot, ".env.release.local");
+const defaultEnvPath = path.join(repoRoot, ".env");
 const LOCAL_BUILD_KEYS = [
   "DARTSNUT_UPDATER_ENDPOINT",
   "DARTSNUT_BASE_API",
@@ -84,7 +84,7 @@ export function resolveUpdaterEndpoint(env = process.env, envPath = defaultEnvPa
   );
   const endpoint = String(configured ?? "").trim();
   if (!endpoint) {
-    throw new Error("Missing DARTSNUT_UPDATER_ENDPOINT; set it in the environment or .env.release.local before running a Tauri build.");
+    throw new Error("Missing DARTSNUT_UPDATER_ENDPOINT; set it in the environment or .env before running a Tauri build.");
   }
   return endpoint;
 }

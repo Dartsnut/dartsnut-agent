@@ -8,6 +8,7 @@ import { spawn } from "node:child_process";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const tauriRoot = path.join(repoRoot, "src-tauri");
 const tauriConfigPath = path.join(tauriRoot, "tauri.conf.json");
+const defaultEnvPath = path.join(repoRoot, ".env");
 
 const packageVersionFiles = [
   "package.json",
@@ -31,7 +32,6 @@ function normalizePlatform(value) {
 export function parseArgs(argv, hostPlatform = process.platform) {
   let platform;
   let version;
-  let envFile;
   const args = [...argv];
 
   if (args[0] === "--") args.shift();
@@ -57,14 +57,6 @@ export function parseArgs(argv, hostPlatform = process.platform) {
       version = arg.slice("--version=".length);
       continue;
     }
-    if (arg === "--env-file") {
-      envFile = args[++index] ?? fail("Missing value for --env-file.");
-      continue;
-    }
-    if (arg.startsWith("--env-file=")) {
-      envFile = arg.slice("--env-file=".length);
-      continue;
-    }
     if (arg.startsWith("-")) fail(`Unknown option: ${arg}`);
     if (version === undefined) {
       version = arg;
@@ -78,7 +70,7 @@ export function parseArgs(argv, hostPlatform = process.platform) {
   if (version !== undefined && !exactSemver.test(version)) {
     fail(`Invalid exact SemVer: ${version}`);
   }
-  return { help: false, platform, version, envFile };
+  return { help: false, platform, version };
 }
 
 function printHelp() {
@@ -92,7 +84,6 @@ Usage:
 Options:
   --platform, -p   mac or win (defaults to current host)
   --version, -v    exact SemVer; synchronizes package, Cargo, and Tauri versions
-  --env-file       optional dotenv file override
 `);
 }
 
@@ -117,20 +108,8 @@ export function parseEnvFile(source) {
   return values;
 }
 
-function findEnvFile(requested) {
-  if (requested) {
-    const resolved = path.resolve(repoRoot, requested);
-    if (!fs.existsSync(resolved)) fail(`Env file not found: ${resolved}`);
-    return resolved;
-  }
-  const candidate = path.join(repoRoot, ".env.release.local");
-  if (!fs.existsSync(candidate)) fail(`Release env file not found: ${candidate}`);
-  return candidate;
-}
-
-export function loadBuildEnv(platform, requestedEnvFile, processEnv = process.env) {
-  const envFile = findEnvFile(requestedEnvFile);
-  const fileEnv = envFile ? parseEnvFile(fs.readFileSync(envFile, "utf8")) : {};
+export function loadBuildEnv(platform, processEnv = process.env, envPath = defaultEnvPath) {
+  const fileEnv = fs.existsSync(envPath) ? parseEnvFile(fs.readFileSync(envPath, "utf8")) : {};
   const env = { ...fileEnv, ...processEnv };
 
   if (!String(env.DARTSNUT_UPDATER_ENDPOINT || "").trim()) {
@@ -140,12 +119,12 @@ export function loadBuildEnv(platform, requestedEnvFile, processEnv = process.en
   const configuredPrivateKey = String(env.TAURI_SIGNING_PRIVATE_KEY || "").trim();
   const configuredPrivateKeyPath = String(env.TAURI_SIGNING_PRIVATE_KEY_PATH || "").trim();
   const privateKeyPathValue = configuredPrivateKeyPath || (
-    configuredPrivateKey && fs.existsSync(resolveFromEnvFile(configuredPrivateKey, envFile))
+    configuredPrivateKey && fs.existsSync(resolveFromEnvFile(configuredPrivateKey, envPath))
       ? configuredPrivateKey
       : undefined
   );
   if (privateKeyPathValue) {
-    const privateKeyPath = resolveFromEnvFile(privateKeyPathValue, envFile);
+    const privateKeyPath = resolveFromEnvFile(privateKeyPathValue, envPath);
     if (!fs.existsSync(privateKeyPath)) fail(`Private key file not found: ${privateKeyPath}`);
     env.TAURI_SIGNING_PRIVATE_KEY = fs.readFileSync(privateKeyPath, "utf8").trim();
   } else if (configuredPrivateKey) {
@@ -188,7 +167,7 @@ export function loadBuildEnv(platform, requestedEnvFile, processEnv = process.en
     env.APPLE_SIGNING_IDENTITY = macIdentity;
   }
 
-  return { env, envFile };
+  return { env };
 }
 
 function isBase64PublicKey(value) {
@@ -203,9 +182,9 @@ function normalizeBase64(value) {
   return String(value || "").replace(/\s+/g, "");
 }
 
-function resolveFromEnvFile(value, envFile) {
+function resolveFromEnvFile(value, envPath) {
   if (path.isAbsolute(value)) return value;
-  return path.resolve(envFile ? path.dirname(envFile) : repoRoot, value);
+  return path.resolve(path.dirname(envPath), value);
 }
 
 function readPackageVersions() {
@@ -400,11 +379,11 @@ async function main() {
     return;
   }
   assertHost(options.platform);
-  const { env, envFile } = loadBuildEnv(options.platform, options.envFile);
+  const { env } = loadBuildEnv(options.platform);
   if (options.platform === "mac") await assertMacIdentity(env.APPLE_SIGNING_IDENTITY);
   const { version, changed } = synchronizeVersion(options.version);
   if (changed.length) console.log(`Synchronized version ${version}: ${changed.join(", ")}`);
-  console.log(`Building ${options.platform} release ${version}${envFile ? ` using ${path.relative(repoRoot, envFile)}` : ""}`);
+  console.log(`Building ${options.platform} release ${version}`);
 
   const buildStartedAt = Date.now();
   const pnpm = commandName();

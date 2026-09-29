@@ -232,7 +232,7 @@ export function parseEnvFile(source) {
 }
 
 export function loadReleaseConfig(repoRoot, processEnv = process.env) {
-  const envPath = path.join(repoRoot, ".env.release.local");
+  const envPath = path.join(repoRoot, ".env");
   const fileEnv = fs.existsSync(envPath) ? parseEnvFile(fs.readFileSync(envPath, "utf8")) : {};
   const value = (key) => String(processEnv[key] ?? fileEnv[key] ?? "").trim();
   const config = {

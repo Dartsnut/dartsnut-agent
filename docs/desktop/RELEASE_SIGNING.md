@@ -19,8 +19,8 @@ pnpm release:publish -- 1.7.5
 fresh artifacts, then uploads the installer and platform-specific updater feed.
 
 Version can also be positional (`pnpm run package:mac -- 1.7.5`). Without a
-version argument, all workspace versions must already match. Use
-`--env-file path/to/release.env` to select another dotenv file.
+version argument, all workspace versions must already match. Local release
+settings come from `.env`; CI can provide them through environment variables.
 
 Builds are host-native: macOS release runs on macOS and Windows release runs on
 Windows. Cross-building is not part of this wrapper because Tauri bundling and
@@ -28,17 +28,12 @@ platform signing require native toolchains.
 
 ## Release configuration
 
-Copy `.env.example` to `.env.release.local` and fill local values. The same
-file works on macOS and Windows; set `TAURI_SIGNING_PRIVATE_KEY_PATH` to a path
-valid on the current host. `.env.release.local` is ignored by Git and is used
-by both the build wrapper and `release:publish`.
+Copy `.env.example` to `.env` and fill local values. The same file is used for
+development, signed builds, and `release:publish`; it is ignored by Git. Set
+`TAURI_SIGNING_PRIVATE_KEY_PATH` to a path valid on the current host.
 
 macOS local releases also require `DARTSNUT_MACOS_SIGNING_IDENTITY`, set to a
 certificate identity installed on the build machine.
-
-For development-only renderer and community settings, copy `.env.example` to
-`.env` instead. `scripts/build-release.mjs` also accepts any dotenv file
-explicitly with `--env-file path/to/release.env`.
 
 Required values:
 

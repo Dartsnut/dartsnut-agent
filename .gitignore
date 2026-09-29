@@ -3,7 +3,6 @@
 **/dist
 **/.vite
 .env
-.env.release.local
 .cursor/
 # Per-workspace agent session + transaction logs (when a project folder is opened in-repo)
 **/.dartsnut/

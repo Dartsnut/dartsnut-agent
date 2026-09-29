@@ -318,11 +318,11 @@ test("publishBuiltArtifacts stops before release save and metadata when signatur
   }
 });
 
-test("loadReleaseConfig reads ignored env and validates required values", () => {
+test("loadReleaseConfig reads .env and validates required values", () => {
   const root = tempDir();
   const emptyRoot = tempDir();
   try {
-    fs.writeFileSync(path.join(root, ".env.release.local"), [
+    fs.writeFileSync(path.join(root, ".env"), [
       "DARTSNUT_RELEASE_API_BASE=https://api.example.com/",
       "DARTSNUT_RELEASE_ACCOUNT=release-admin",
       "DARTSNUT_RELEASE_PASSWORD='secret value'",

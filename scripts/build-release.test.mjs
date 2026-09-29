@@ -9,7 +9,7 @@ import { loadLocalBuildEnvironment, resolveUpdaterEndpoint, updaterConfigOverrid
 test("resolveUpdaterEndpoint prefers the process environment", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "dartsnut-updater-env-"));
   try {
-    const envPath = path.join(root, ".env.release.local");
+    const envPath = path.join(root, ".env");
     fs.writeFileSync(envPath, "DARTSNUT_UPDATER_ENDPOINT=https://local.example/latest-{{target}}.json\n");
     assert.equal(
       resolveUpdaterEndpoint({ DARTSNUT_UPDATER_ENDPOINT: "https://ci.example/latest-{{target}}.json" }, envPath),
@@ -20,10 +20,10 @@ test("resolveUpdaterEndpoint prefers the process environment", () => {
   }
 });
 
-test("resolveUpdaterEndpoint reads only the updater endpoint from the local release file", () => {
+test("resolveUpdaterEndpoint reads only the updater endpoint from .env", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "dartsnut-updater-env-"));
   try {
-    const envPath = path.join(root, ".env.release.local");
+    const envPath = path.join(root, ".env");
     fs.writeFileSync(envPath, [
       "DARTSNUT_RELEASE_PASSWORD=do-not-forward",
       "DARTSNUT_UPDATER_ENDPOINT='https://local.example/latest-{{target}}.json'"
@@ -49,7 +49,7 @@ test("loadLocalBuildEnvironment loads signing inputs without release credentials
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "dartsnut-direct-build-env-"));
   try {
     const keyPath = path.join(root, "release.key");
-    const envPath = path.join(root, ".env.release.local");
+    const envPath = path.join(root, ".env");
     fs.writeFileSync(keyPath, "private key contents\n");
     fs.writeFileSync(envPath, [
       "DARTSNUT_UPDATER_ENDPOINT=https://updates.example.com/latest-{{target}}.json",
@@ -68,15 +68,10 @@ test("loadLocalBuildEnvironment loads signing inputs without release credentials
   }
 });
 
-test("parseArgs accepts platform, version, and env file", () => {
-  assert.deepEqual(
-    parseArgs(["--platform", "win", "--version", "1.7.5", "--env-file", ".env.release.local"], "win32"),
-    {
-      help: false,
-      platform: "win",
-      version: "1.7.5",
-      envFile: ".env.release.local"
-    }
+test("parseArgs rejects alternate environment files", () => {
+  assert.throws(
+    () => parseArgs(["--platform", "win", "--env-file", "other.env"], "win32"),
+    /Unknown option: --env-file/
   );
 });
 
@@ -84,8 +79,7 @@ test("parseArgs accepts package-manager separator after platform", () => {
   assert.deepEqual(parseArgs(["--platform", "mac", "--", "--version", "2.0.0"], "darwin"), {
     help: false,
     platform: "mac",
-    version: "2.0.0",
-    envFile: undefined
+    version: "2.0.0"
   });
 });
 
@@ -93,8 +87,7 @@ test("parseArgs accepts positional version and native host default", () => {
   assert.deepEqual(parseArgs(["1.7.5"], "darwin"), {
     help: false,
     platform: "mac",
-    version: "1.7.5",
-    envFile: undefined
+    version: "1.7.5"
   });
 });
 
@@ -129,7 +122,7 @@ test("loadBuildEnv reads private key path into key content", () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "dartsnut-release-"));
   try {
     const keyPath = path.join(tempRoot, "release.key");
-    const envPath = path.join(tempRoot, ".env.release.local");
+    const envPath = path.join(tempRoot, ".env");
     const publicKey = JSON.parse(fs.readFileSync("src-tauri/tauri.conf.json", "utf8"))
       .plugins.updater.pubkey;
     fs.writeFileSync(keyPath, "private key contents\n");
@@ -140,7 +133,7 @@ test("loadBuildEnv reads private key path into key content", () => {
       "DARTSNUT_UPDATER_ENDPOINT=https://updates.example.com/latest.json"
     ].join("\n"));
 
-    const { env } = loadBuildEnv("win", envPath, {});
+    const { env } = loadBuildEnv("win", {}, envPath);
     assert.equal(env.TAURI_SIGNING_PRIVATE_KEY, "private key contents");
     assert.equal(env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD, "");
     assert.equal(env.TAURI_SIGNING_PUBLIC_KEY, publicKey);
@@ -149,11 +142,11 @@ test("loadBuildEnv reads private key path into key content", () => {
   }
 });
 
-test("loadBuildEnv supports repository-root release env files", () => {
+test("loadBuildEnv uses .env values for signed builds", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "dartsnut-release-root-env-"));
   try {
     const keyPath = path.join(root, "release.key");
-    const envPath = path.join(root, ".env.release.local");
+    const envPath = path.join(root, ".env");
     const publicKey = JSON.parse(fs.readFileSync("src-tauri/tauri.conf.json", "utf8"))
       .plugins.updater.pubkey;
     fs.writeFileSync(keyPath, "private key contents\n");
@@ -165,10 +158,29 @@ test("loadBuildEnv supports repository-root release env files", () => {
       "DARTSNUT_MACOS_SIGNING_IDENTITY=Test Signing Identity"
     ].join("\n"));
 
-    const { env } = loadBuildEnv("mac", envPath, {});
+    const { env } = loadBuildEnv("mac", {}, envPath);
     assert.equal(env.TAURI_SIGNING_PRIVATE_KEY, "private key contents");
     assert.equal(env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD, "secret");
     assert.equal(env.APPLE_SIGNING_IDENTITY, "Test Signing Identity");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("loadBuildEnv supports process-environment values when .env is absent", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "dartsnut-release-process-env-"));
+  try {
+    const publicKey = JSON.parse(fs.readFileSync("src-tauri/tauri.conf.json", "utf8"))
+      .plugins.updater.pubkey;
+    const { env } = loadBuildEnv("win", {
+      TAURI_SIGNING_PRIVATE_KEY: "private key contents",
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: "",
+      TAURI_SIGNING_PUBLIC_KEY: publicKey,
+      DARTSNUT_UPDATER_ENDPOINT: "https://updates.example.com/latest.json"
+    }, path.join(root, ".env"));
+
+    assert.equal(env.TAURI_SIGNING_PRIVATE_KEY, "private key contents");
+    assert.equal(env.DARTSNUT_UPDATER_ENDPOINT, "https://updates.example.com/latest.json");
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

@@ -70,18 +70,11 @@ pub fn run() {
     init_tracing();
 
     // Load repository-root configuration before any command reads
-    // community/Supabase settings. Development prefers .env and falls back to
-    // the local release env so `pnpm dev` works without duplicated settings.
+    // community/Supabase settings.
     #[cfg(debug_assertions)]
     {
         let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
-        let dev_env = repo_root.join(".env");
-        let env_path = if dev_env.is_file() {
-            dev_env
-        } else {
-            repo_root.join(".env.release.local")
-        };
-        let _ = dotenvy::from_path(env_path);
+        let _ = dotenvy::from_path(repo_root.join(".env"));
     }
 
     // reqwest is built with `rustls-no-provider`; install the ring provider
