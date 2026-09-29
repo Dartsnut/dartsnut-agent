@@ -180,6 +180,14 @@ mod tests {
     }
 
     #[test]
+    fn responses_url_uses_agent_bridge_route() {
+        assert_eq!(
+            responses_url("https://api.example.com/agent/llm").unwrap(),
+            "https://api.example.com/agent/llm/v1/responses"
+        );
+    }
+
+    #[test]
     fn preserves_previous_response_id() {
         let (_, request) = build_request(
             "https://gateway.test/v1",

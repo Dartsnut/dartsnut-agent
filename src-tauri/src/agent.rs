@@ -405,6 +405,42 @@ pub async fn send_prompt(
     result
 }
 
+const DARTSNUT_LLM_FALLBACK_MODEL: &str = "gpt-5.6-terra";
+const DARTSNUT_LLM_FALLBACK_API_FORMAT: &str = "responses";
+
+fn resolve_dartsnut_llm_transport(
+    info: Result<crate::desktop_commands::LlmBridgeInfo, String>,
+) -> Result<(String, String), String> {
+    match info {
+        Ok(info) => {
+            let parsed_format = info
+                .api_format
+                .parse::<crate::api_format::ApiFormat>()
+                .map_err(|_| format!("Unsupported API format: {}", info.api_format))?;
+            if parsed_format == crate::api_format::ApiFormat::Auto {
+                return Err("Server returned unresolved format: auto".to_owned());
+            }
+            let model = if parsed_format == crate::api_format::ApiFormat::Gemini {
+                info.model
+            } else {
+                info.path
+            };
+            Ok((model, info.api_format))
+        }
+        Err(error) => {
+            tracing::warn!(
+                target: "dartsnut_agent_lib",
+                error = %error,
+                "Dartsnut LLM endpoint discovery failed; using compatibility transport"
+            );
+            Ok((
+                DARTSNUT_LLM_FALLBACK_MODEL.to_owned(),
+                DARTSNUT_LLM_FALLBACK_API_FORMAT.to_owned(),
+            ))
+        }
+    }
+}
+
 async fn run_prompt(
     app: &AppHandle,
     cancel: &Arc<AtomicBool>,
@@ -498,13 +534,9 @@ async fn run_prompt(
                 json!({"ok":false,"failureReason":failure_reason,"message":format!("Dartsnut LLM unavailable: {error}")}),
             );
         }
-        let info = crate::desktop_commands::community_llm_info(app).await
-            .map_err(|error| format!("LLM endpoint discovery failed: {error}"))?;
-        let parsed_format = info.api_format.parse::<crate::api_format::ApiFormat>()
-            .map_err(|_| format!("Unsupported API format: {}", info.api_format))?;
-        if parsed_format == crate::api_format::ApiFormat::Auto {
-            return Ok(json!({"ok":false,"message":"Server returned unresolved format: auto"}));
-        }
+        let (model_name, api_format_name) = resolve_dartsnut_llm_transport(
+            crate::desktop_commands::community_llm_info(app).await,
+        )?;
         let token = crate::desktop_commands::community_token(app)
             .ok_or_else(|| "Sign in to your Dartsnut account to use Dartsnut LLM.".to_owned())?;
         let mut headers = HeaderMap::new();
@@ -522,21 +554,14 @@ async fn run_prompt(
             "x-dartsnut-agent-run-id",
             HeaderValue::from_str(&run_id).map_err(|_| "Invalid Dartsnut run ID".to_owned())?,
         );
-        let base_url = format!("{}/agent/llm", crate::desktop_commands::community_base_url()?);
-        let model_name = if parsed_format == crate::api_format::ApiFormat::Gemini {
-            // Gemini: use discovered model name, rig-agent constructs paths
-            info.model.clone()
-        } else {
-            // Other formats: use full path as model (path already includes /v1/...)
-            info.path.clone()
-        };
+        let base_url = format!("{}/agent/llm/v1", crate::desktop_commands::community_base_url()?);
         (
             base_url,
             "dartsnut-api-bridge".to_owned(),
             model_name,
             Some(run_id),
             Some(headers),
-            Some(info.api_format.clone()),
+            Some(api_format_name),
         )
     } else {
         let base = settings.custom.base_url.as_str();
@@ -759,6 +784,60 @@ mod tests {
     fn limits() {
         assert_eq!(MAX_TURNS, 128);
         assert_eq!(MAX_ATTEMPTS, 3);
+    }
+
+    #[test]
+    fn dartsnut_llm_discovery_failure_uses_responses_fallback() {
+        assert_eq!(
+            resolve_dartsnut_llm_transport(Err("endpoint discovery unavailable".to_owned()))
+                .unwrap(),
+            ("gpt-5.6-terra".to_owned(), "responses".to_owned())
+        );
+    }
+
+    #[test]
+    fn dartsnut_llm_discovered_responses_transport_preserves_path() {
+        let info = crate::desktop_commands::LlmBridgeInfo {
+            api_format: "responses".to_owned(),
+            model: "upstream-model".to_owned(),
+            path: "/v1/responses".to_owned(),
+            stream_path: None,
+            allowed_paths: Vec::new(),
+            supported_formats: Vec::new(),
+        };
+        assert_eq!(
+            resolve_dartsnut_llm_transport(Ok(info)).unwrap(),
+            ("/v1/responses".to_owned(), "responses".to_owned())
+        );
+    }
+
+    #[test]
+    fn dartsnut_llm_discovered_metadata_errors_are_not_fallback() {
+        let auto_info = crate::desktop_commands::LlmBridgeInfo {
+            api_format: "auto".to_owned(),
+            model: "model".to_owned(),
+            path: "/v1/responses".to_owned(),
+            stream_path: None,
+            allowed_paths: Vec::new(),
+            supported_formats: Vec::new(),
+        };
+        assert_eq!(
+            resolve_dartsnut_llm_transport(Ok(auto_info)),
+            Err("Server returned unresolved format: auto".to_owned())
+        );
+
+        let unknown_info = crate::desktop_commands::LlmBridgeInfo {
+            api_format: "unknown".to_owned(),
+            model: "model".to_owned(),
+            path: "/v1/responses".to_owned(),
+            stream_path: None,
+            allowed_paths: Vec::new(),
+            supported_formats: Vec::new(),
+        };
+        assert_eq!(
+            resolve_dartsnut_llm_transport(Ok(unknown_info)),
+            Err("Unsupported API format: unknown".to_owned())
+        );
     }
     #[test]
     fn cancel() {
