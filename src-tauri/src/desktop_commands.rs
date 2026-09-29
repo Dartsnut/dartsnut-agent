@@ -616,7 +616,7 @@ pub async fn download_app_update(
     let available_version = update.version.clone();
     let downloaded = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let progress_counter = downloaded.clone();
-    let bytes = update
+    let bytes = match update
         .download(
             move |chunk, length| {
                 let current = progress_counter
@@ -639,7 +639,20 @@ pub async fn download_app_update(
             || {},
         )
         .await
-        .map_err(|error| error.to_string())?;
+    {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            let message = error.to_string();
+            let mut pending = state
+                .update
+                .lock()
+                .map_err(|_| "updater state unavailable")?;
+            pending.downloading = false;
+            pending.state.download_failed("Update download failed. Try again.");
+            let _ = app.emit("app:update-status-changed", pending.state.clone());
+            return Ok(json!({"ok":false,"reason":"failed","message":message}));
+        }
+    };
     let mut pending = state
         .update
         .lock()
@@ -676,11 +689,10 @@ pub async fn check_app_update(
     if let Ok(value) = state.update.lock() {
         let _ = app.emit("app:update-status-changed", value.state.clone());
     }
-    let result = app
-        .updater()
-        .map_err(|error| error.to_string())?
-        .check()
-        .await;
+    let result = match app.updater() {
+        Ok(updater) => updater.check().await.map_err(|error| error.to_string()),
+        Err(error) => Err(error.to_string()),
+    };
     let mut pending = state
         .update
         .lock()
@@ -704,10 +716,12 @@ pub async fn check_app_update(
             Ok(json!({"ok":true}))
         }
         Err(error) => {
-            pending.state.kind = crate::updates::UpdateKind::Error;
-            pending.state.message = Some(error.to_string());
+            pending.state = crate::updates::UpdateState::error(
+                env!("CARGO_PKG_VERSION"),
+                error.clone(),
+            );
             let _ = app.emit("app:update-status-changed", pending.state.clone());
-            Ok(json!({"ok":false,"reason":"failed","message":error.to_string()}))
+            Ok(json!({"ok":false,"reason":"failed","message":error}))
         }
     }
 }

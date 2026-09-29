@@ -6,7 +6,7 @@
     "packages/*"
   ],
   "scripts": {
-    "dev": "tauri dev",
+    "dev": "node scripts/run-tauri-dev.mjs",
     "dev:renderer": "vite --host 127.0.0.1 --port 5173 --strictPort",
     "build:contracts": "pnpm --dir packages/desktop-contracts run build && pnpm --dir packages/emulator-protocol run build",
     "build:renderer": "vite build",
@@ -22,7 +22,7 @@
     "test:release-publish": "node --test scripts/publish_release.test.js",
     "test:release-build": "node --test scripts/build-release.test.mjs",
     "test:renderer": "vitest run",
-    "test:updater": "vitest run src/appUpdateStartup.test.ts && cargo test --offline --manifest-path src-tauri/Cargo.toml updates",
+    "test:updater": "vitest run src/appUpdateStartup.test.ts src/appUpdateAutoDownload.test.ts src/appUpdateSettings.test.ts && cargo test --offline --manifest-path src-tauri/Cargo.toml updates",
     "test": "pnpm --dir packages/desktop-contracts run test && pnpm --dir packages/emulator-protocol run test && pnpm run test:renderer && pnpm run test:release-build && pnpm run test:release-publish",
     "export:agent-plugin": "node scripts/export_agent_plugin.mjs",
     "check:agent-plugin": "node scripts/export_agent_plugin.mjs --check && node scripts/check_agent_plugin.mjs",

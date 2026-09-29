@@ -84,7 +84,7 @@ export function resolveUpdaterEndpoint(env = process.env, envPath = defaultEnvPa
   );
   const endpoint = String(configured ?? "").trim();
   if (!endpoint) {
-    throw new Error("Missing DARTSNUT_UPDATER_ENDPOINT; set it before running a release Tauri build.");
+    throw new Error("Missing DARTSNUT_UPDATER_ENDPOINT; set it in the environment or .env.release.local before running a Tauri build.");
   }
   return endpoint;
 }
