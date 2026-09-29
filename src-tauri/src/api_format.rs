@@ -6,9 +6,10 @@
 use std::str::FromStr;
 
 /// API format variants supported by custom provider configuration.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ApiFormat {
     /// Automatically select format (currently resolves to Responses).
+    #[default]
     Auto,
     /// OpenAI Responses API format.
     Responses,
@@ -18,12 +19,6 @@ pub enum ApiFormat {
     Claude,
     /// Google Gemini native format.
     Gemini,
-}
-
-impl Default for ApiFormat {
-    fn default() -> Self {
-        ApiFormat::Auto
-    }
 }
 
 impl FromStr for ApiFormat {

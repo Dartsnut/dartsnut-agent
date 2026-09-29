@@ -276,6 +276,7 @@ pub async fn build_agent_with_context_async(
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn build_agent_with_context_async_headers(
     base_url: &str,
     api_key: &str,
@@ -305,6 +306,7 @@ pub async fn build_agent_with_context_async_headers(
 
 
 
+#[allow(clippy::too_many_arguments)]
 fn build_agent_with_http_client(
     base_url: &str,
     api_key: &str,

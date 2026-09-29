@@ -916,10 +916,10 @@ mod tests {
             "copy_chat_attachment succeeded: {\"ok\":true}",
             None,
         );
-        assert!(app_mutated_since(&[apply.clone()], 0));
-        assert!(app_mutated_since(&[copy_asset.clone()], 0));
-        assert!(app_mutated_since(&[compact_copy.clone()], 0));
-        assert!(!app_mutated_since(&[apply.clone()], 1));
+        assert!(app_mutated_since(std::slice::from_ref(&apply), 0));
+        assert!(app_mutated_since(std::slice::from_ref(&copy_asset), 0));
+        assert!(app_mutated_since(std::slice::from_ref(&compact_copy), 0));
+        assert!(!app_mutated_since(std::slice::from_ref(&apply), 1));
 
         let started = tool_event(
             "apply_patch",
