@@ -40,6 +40,11 @@ fn workspace_project_type(conf: &Value) -> &'static str {
 }
 
 pub(crate) fn community_base_url() -> Result<String, String> {
+    // Debug override: DARTSNUT_LLM_BASE_URL takes precedence
+    if let Ok(debug_url) = std::env::var("DARTSNUT_LLM_BASE_URL") {
+        return Ok(debug_url.trim_end_matches('/').to_owned());
+    }
+    
     crate::commands::community_configured_env("DARTSNUT_BASE_API")
         .ok_or_else(|| "DARTSNUT_BASE_API is not configured.".to_owned())
         .map(|value| value.trim_end_matches('/').to_owned())
@@ -101,6 +106,52 @@ pub(crate) async fn community_llm_finish_run(app: &AppHandle, run_id: &str) {
         Some(json!({"run_id": run_id})),
     )
     .await;
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct LlmBridgeInfo {
+    pub api_format: String,
+    pub model: String,
+    pub path: String,
+    #[serde(default)]
+    pub stream_path: Option<String>,
+    #[serde(default)]
+    pub allowed_paths: Vec<String>,
+    #[serde(default)]
+    pub supported_formats: Vec<SupportedFormat>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct SupportedFormat {
+    #[serde(alias = "api_format")]
+    pub format: String,
+    pub path: String,
+    #[serde(default)]
+    pub stream_path: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+pub(crate) async fn community_llm_info(app: &AppHandle) -> Result<LlmBridgeInfo, String> {
+    let token = community_token(app)
+        .ok_or_else(|| "Sign in to your Dartsnut account to use Dartsnut LLM.".to_owned())?;
+    let (status, raw) = community_request(
+        reqwest::Method::GET,
+        "/agent/llm/info",
+        Some(&token),
+        None,
+    ).await?;
+    if !(200..300).contains(&status) || raw.get("code").and_then(Value::as_i64) != Some(1001) {
+        let message = raw.get("desc")
+            .or_else(|| raw.get("msg"))
+            .and_then(Value::as_str)
+            .unwrap_or("Could not discover LLM endpoint configuration.");
+        return Err(message.to_owned());
+    }
+    let data = raw.get("data")
+        .ok_or_else(|| "Discovery response missing data field.".to_owned())?;
+    serde_json::from_value(data.clone())
+        .map_err(|e| format!("Invalid discovery response: {} | Data: {:?}", e, data))
 }
 
 fn community_error(code: &str, message: impl Into<String>, server: Option<&str>) -> Value {
@@ -462,33 +513,54 @@ pub fn reset_renderer_state(app: AppHandle, _payload: Option<Value>) -> Result<(
 pub fn restart_app(app: AppHandle, _payload: Option<Value>) -> Result<(), String> {
     app.restart()
 }
+fn command_payload(payload: Option<Value>) -> Option<Value> {
+    let value = payload?;
+    Some(value.get("payload").cloned().unwrap_or(value))
+}
+
+fn fallback_chat_title(message: &str) -> Option<String> {
+    let title = message.split_whitespace().collect::<Vec<_>>().join(" ");
+    if title.is_empty() {
+        return None;
+    }
+    Some(title.chars().take(60).collect())
+}
+
+fn chat_title_request(payload: Option<Value>) -> Option<(String, String)> {
+    let value = command_payload(payload)?;
+    let chat_id = value
+        .get("chatId")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
+    if chat_id.is_empty() {
+        return None;
+    }
+    let title = fallback_chat_title(
+        value
+            .get("firstUserMessage")
+            .and_then(Value::as_str)
+            .unwrap_or(""),
+    )?;
+    Some((chat_id.to_owned(), title))
+}
+
 #[tauri::command]
 pub fn generate_chat_title(
     app: AppHandle,
     state: tauri::State<'_, crate::commands::AppState>,
     payload: Option<Value>,
 ) -> Value {
-    let Some(value) = payload else {
+    let Some((chat_id, title)) = chat_title_request(payload) else {
         return json!({"tree":{"projects":[],"chats":[]},"updated":false});
     };
-    let chat_id = value.get("chatId").and_then(Value::as_str).unwrap_or("");
-    let fallback = value
-        .get("firstUserMessage")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .trim();
-    if chat_id.is_empty() || fallback.is_empty() {
-        return json!({"tree":{"projects":[],"chats":[]},"updated":false});
-    }
-    let title = fallback.split_whitespace().collect::<Vec<_>>().join(" ");
-    let title = title.chars().take(60).collect::<String>();
     let Some(mut store_guard) = crate::commands::store_for_title(&app, &state) else {
         return json!({"tree":{"projects":[],"chats":[]},"updated":false});
     };
     let Some(store) = store_guard.as_mut() else {
         return json!({"tree":{"projects":[],"chats":[]},"updated":false});
     };
-    let updated = store.rename_chat(chat_id, &title).unwrap_or(false);
+    let updated = store.rename_chat(&chat_id, &title).unwrap_or(false);
     let (projects, chats) = store.list();
     json!({"tree":{"projects":projects,"chats":chats},"updated":updated,"title":title})
 }
@@ -2187,6 +2259,30 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
+    fn chat_title_request_accepts_nested_and_direct_payloads() {
+        let nested = chat_title_request(Some(json!({
+            "payload": {
+                "chatId": "chat-1",
+                "firstUserMessage": "  Build a maze   game  "
+            }
+        })));
+        assert_eq!(
+            nested,
+            Some(("chat-1".to_owned(), "Build a maze game".to_owned()))
+        );
+        let direct = chat_title_request(Some(json!({
+            "chatId": "chat-1",
+            "firstUserMessage": "Build a maze game"
+        })));
+        assert_eq!(direct, nested);
+        assert_eq!(chat_title_request(None), None);
+        assert_eq!(
+            chat_title_request(Some(json!({"chatId":"chat-1","firstUserMessage":"   "}))),
+            None
+        );
+    }
+
+    #[test]
     fn query_encoding_is_url_safe() {
         assert_eq!(query_encode("a b/c"), "a%20b%2Fc");
         assert_eq!(query_encode("model-1_2.0~x"), "model-1_2.0~x");
@@ -2221,6 +2317,27 @@ mod tests {
         assert_eq!(normalized["limitTokens"], 10000000);
         assert_eq!(normalized["remainingTokens"], 9998500);
         assert_eq!(normalized["customLimitTokens"], Value::Null);
+    }
+
+    #[test]
+    fn parse_llm_info_response() {
+        let mock_response = json!({
+            "api_format": "responses",
+            "model": "test-model",
+            "path": "/v1/responses",
+            "stream_path": null,
+            "allowed_paths": ["/v1/responses", "/v1/chat/completions"],
+            "supported_formats": [
+                {"format": "responses", "path": "/v1/responses"},
+                {"format": "gemini", "path": "/v1beta/models/gemini:generateContent", "stream_path": "/v1beta/models/gemini:streamGenerateContent", "description": "Google Gemini API"}
+            ]
+        });
+        let info: LlmBridgeInfo = serde_json::from_value(mock_response).unwrap();
+        assert_eq!(info.api_format, "responses");
+        assert_eq!(info.path, "/v1/responses");
+        assert_eq!(info.stream_path, None);
+        assert_eq!(info.supported_formats.len(), 2);
+        assert_eq!(info.supported_formats[1].format, "gemini");
     }
 
     #[test]

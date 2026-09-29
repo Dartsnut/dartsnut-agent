@@ -14,7 +14,7 @@ Cargo replacement surface:
   backend primitives.
 - Rust agent runtime provides 128-turn persisted sessions, previous-response
   chaining, retries, cancellation, namespaced streaming events, and workspace
-  DynamicTools (`list_files`, `read_file`, `write_file`, `replace_in_file`,
+  DynamicTools (`list_files`, `read_file`, `apply_patch`,
   `grep_files`, `glob_files`, `copy_chat_attachment`,
   `get_dartsnut_skill`, `check_python`, emulator controls/scenarios, user
   questions, PixelLab generation, and machine MCP).

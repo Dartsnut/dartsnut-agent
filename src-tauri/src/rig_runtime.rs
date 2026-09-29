@@ -4,6 +4,7 @@
 //! gateways, while this module validates and constructs Rig's native agent
 //! runtime for compatible OpenAI endpoints.
 
+use crate::api_format::ApiFormat;
 use base64::Engine;
 use futures_util::StreamExt;
 use reqwest::header::HeaderMap;
@@ -26,6 +27,16 @@ use tokio::time::{sleep, Duration};
 
 /// Production agent turn budget. Matches legacy @openai/agents loop limit.
 pub const MAX_TURNS: usize = 128;
+
+pub const AGENT_PREAMBLE: &str = r#"You are the Dartsnut Agent working in the current workspace. The user's request is the source of truth for what to build or change. Choose the design, files, tools, and order needed to fulfill that request.
+
+For an existing-file change, inspect the relevant source and apply the minimal patch. Do not load Dartsnut skills unless the files you already read do not show a needed pydartsnut, pygame, or conf.json API. Do not treat HUD, text, spacing, or color tweaks as a reason to load skills or to re-validate the whole project. On 128x160 layouts, the bottom screen is the 64x32 strip below y=128; HUD labels there are ordinary pygame text in `main.py`.
+
+When a request creates a new Dartsnut game or widget, leave the workspace runnable before finishing. A runnable workspace has `main.py`, a valid `pyproject.toml` with non-empty `[project].name` and `[project].version` and direct `pydartsnut` in `[project].dependencies`, and either no `conf.json`, a legacy game manifest with `"type":"game"`, or a widget `conf.json` with valid `size` and `fields`. Preserve the behavior requested by the user and unrelated existing files.
+
+Mutation results may include `workspace.ok` and `workspace.reason`. If a mutation leaves the workspace unrunnable, make the minimum project-file changes needed. After a successful existing-file patch with `workspace.ok=true`, finish unless the user asked to verify."#;
+
+pub const GET_DARTSNUT_SKILL_DESCRIPTION: &str = "Load dartsnut-core, dartsnut-game, or dartsnut-widget only when creating a new app or when workspace files do not already show a needed pydartsnut, pygame, or conf.json API. Do not load skills for existing HUD, text, spacing, or color edits.";
 
 /// Events emitted by Rig's native multi-turn stream. Keep provider payloads out
 /// of renderer events; only normalized text/tool metadata crosses this boundary.
@@ -239,11 +250,11 @@ pub fn build_agent_with_context(
         workspace_root,
         app,
         http_client,
+        None, // No format override for legacy callers
     )
 }
 
 /// Async agent construction used by production execution. Allows remote PAC
-/// scripts to be fetched before Rig starts its provider stream.
 pub async fn build_agent_with_context_async(
     base_url: &str,
     api_key: &str,
@@ -260,10 +271,12 @@ pub async fn build_agent_with_context_async(
         workspace_root,
         app,
         None,
+        None, // No format override for legacy callers
     )
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn build_agent_with_context_async_headers(
     base_url: &str,
     api_key: &str,
@@ -272,6 +285,7 @@ pub async fn build_agent_with_context_async_headers(
     workspace_root: Option<PathBuf>,
     app: Option<AppHandle>,
     headers: Option<HeaderMap>,
+    api_format: Option<&str>,
 ) -> Result<Agent, String> {
     crate::ensure_rustls_crypto_provider();
     let http_client = match headers {
@@ -286,9 +300,13 @@ pub async fn build_agent_with_context_async_headers(
         workspace_root,
         app,
         http_client,
+        api_format,
     )
 }
 
+
+
+#[allow(clippy::too_many_arguments)]
 fn build_agent_with_http_client(
     base_url: &str,
     api_key: &str,
@@ -297,16 +315,72 @@ fn build_agent_with_http_client(
     workspace_root: Option<PathBuf>,
     app: Option<AppHandle>,
     http_client: reqwest::Client,
+    api_format: Option<&str>,
 ) -> Result<Agent, String> {
-    let client = rig_agent::core::providers::openai::Client::builder()
-        .api_key(api_key)
-        .base_url(base_url)
-        .http_client(http_client)
-        .build()
-        .map_err(|error| error.to_string())?;
-    let mut builder = AgentBuilder::new(client.completion_model(model))
+    // Parse and resolve format, defaulting to Responses for backward compatibility
+    let format = api_format
+        .and_then(|s| s.parse::<ApiFormat>().ok())
+        .unwrap_or_default()
+        .resolve();
+    
+    // Strip version paths only for non-OpenAI formats
+    // OpenAI client expects base_url to include /v1 (e.g., https://api.openai.com/v1)
+    // Gemini/Claude clients append their own paths and need clean base (e.g., https://gateway.com)
+    let normalized_base_url = match format {
+        ApiFormat::Responses | ApiFormat::ChatCompletion => {
+            // Keep /v1 for OpenAI formats
+            base_url.trim_end_matches('/')
+        }
+        ApiFormat::Claude | ApiFormat::Gemini => {
+            // Strip version paths for native provider formats
+            base_url
+                .trim_end_matches('/')
+                .trim_end_matches("/v1")
+                .trim_end_matches("/v1beta")
+                .trim_end_matches("/api")
+        }
+        ApiFormat::Auto => {
+            return Err("ApiFormat::Auto should have been resolved before this point".to_string());
+        }
+    };
+    // Build provider-specific client with custom base_url
+    let mut builder = match format {
+        ApiFormat::Responses | ApiFormat::ChatCompletion => {
+            let client = rig_agent::core::providers::openai::Client::builder()
+                .api_key(api_key)
+                .base_url(normalized_base_url)
+                .http_client(http_client)
+                .build()
+                .map_err(|error| error.to_string())?;
+            AgentBuilder::new(client.completion_model(model))
+        }
+        ApiFormat::Claude => {
+            let client = rig_agent::core::providers::anthropic::Client::builder()
+                .api_key(api_key)
+                .base_url(normalized_base_url)
+                .http_client(http_client)
+                .build()
+                .map_err(|error| error.to_string())?;
+            AgentBuilder::new(client.completion_model(model))
+        }
+        ApiFormat::Gemini => {
+            let client = rig_agent::core::providers::gemini::Client::builder()
+                .api_key(api_key)
+                .base_url(normalized_base_url)
+                .http_client(http_client)
+                .build()
+                .map_err(|error| error.to_string())?;
+            AgentBuilder::new(client.completion_model(model))
+        }
+        ApiFormat::Auto => {
+            return Err("ApiFormat::Auto should have been resolved before this point".to_string());
+        }
+    };
+    
+    builder = builder
         .name("dartsnut-agent")
         .default_max_turns(MAX_TURNS);
+    
     if let Some(preamble) = preamble.filter(|value| !value.trim().is_empty()) {
         builder = builder.preamble(preamble);
     }
@@ -326,12 +400,12 @@ fn workspace_tools_with_context(root: PathBuf, app: Option<AppHandle>) -> Vec<Dy
         "read_file" => {
             serde_json::json!({"type":"object","properties":{"path":{"type":"string"},"offset":{"type":"number"},"limit":{"type":"number"}},"required":["path"]})
         }
-        "write_file" => {
-            serde_json::json!({"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]})
-        }
-        "replace_in_file" => {
-            serde_json::json!({"type":"object","properties":{"path":{"type":"string"},"find":{"type":"string"},"replace":{"type":"string"},"replace_all":{"type":"boolean"}},"required":["path","find","replace"]})
-        }
+        "apply_patch" => serde_json::json!({
+            "type":"object",
+            "properties":{"patch":{"type":"string"}},
+            "required":["patch"],
+            "additionalProperties":false
+        }),
         "grep_files" => {
             serde_json::json!({"type":"object","properties":{"pattern":{"type":"string"},"glob":{"type":"string"},"path":{"type":"string"},"ignore_case":{"type":"boolean"},"max_results":{"type":"number"}},"required":["pattern"],"additionalProperties":false})
         }
@@ -355,8 +429,7 @@ fn workspace_tools_with_context(root: PathBuf, app: Option<AppHandle>) -> Vec<Dy
     let names = [
         "list_files",
         "read_file",
-        "write_file",
-        "replace_in_file",
+        "apply_patch",
         "grep_files",
         "glob_files",
         "get_dartsnut_skill",
@@ -373,11 +446,10 @@ fn workspace_tools_with_context(root: PathBuf, app: Option<AppHandle>) -> Vec<Dy
             let description = match name {
                 "list_files" => "List files inside the workspace recursively.",
                 "read_file" => "Read a UTF-8 workspace file, optionally selecting line ranges.",
-                "write_file" => "Write UTF-8 content to a workspace file.",
-                "replace_in_file" => "Replace text in an existing workspace file.",
+                "apply_patch" => "Apply a workspace patch. This is the only file create/edit/delete/rename tool. Do not copy `read_file` line-number prefixes (`N\\t`). Format: first line `*** Begin Patch`, last line `*** End Patch`. Operations: `*** Add File: rel/path` then `+` lines; `*** Delete File: rel/path`; `*** Update File: rel/path` then optional `*** Move to: rel/path` then hunks. Hunk header `@@` or `@@ section`. Hunk lines start with ` ` (context), `-` (remove), or `+` (add). Blank line = blank context. Optional `*** End of File` after a hunk. Paths are workspace-relative.",
                 "grep_files" => "Search workspace files for matching text.",
                 "glob_files" => "List workspace files matching a glob pattern.",
-                "get_dartsnut_skill" => "Load one bundled Dartsnut domain skill by ID.",
+                "get_dartsnut_skill" => GET_DARTSNUT_SKILL_DESCRIPTION,
                 "check_python" => {
                     "Run Python syntax checks on workspace files without executing them."
                 }
@@ -464,7 +536,7 @@ fn workspace_tools_with_context(root: PathBuf, app: Option<AppHandle>) -> Vec<Dy
                 "observe_emulator",
                 "Observe latest emulator frame and state.",
             ),
-            ("control_emulator_input", "Drive emulator input actions."),
+            ("control_emulator_input", "Drive emulator buttons and darts. Prefer tap_button so the press is released. Button names: A, B, UP, DOWN, LEFT, RIGHT. throw_dart x/y are display pixels 0-127; index is 0-11 or next."),
             ("run_emulator_scenario", "Run bounded emulator scenario."),
             ("get_emulator_logs", "Read recent emulator logs."),
             (
@@ -487,10 +559,45 @@ fn workspace_tools_with_context(root: PathBuf, app: Option<AppHandle>) -> Vec<Dy
                     serde_json::json!({"type":"object","properties":{"include_png":{"type":"boolean"},"include_hardware_mockup":{"type":"boolean"},"wait_for_frame_ms":{"type":"number"},"max_log_lines":{"type":"number"}}})
                 }
                 "control_emulator_input" => {
-                    serde_json::json!({"type":"object","properties":{"action":{"type":"object"}},"required":["action"]})
+                    serde_json::json!({
+                        "type":"object",
+                        "properties":{
+                            "action":{
+                                "type":"object",
+                                "properties":{
+                                    "type":{"type":"string","enum":["tap_button","set_button","throw_dart","remove_dart","clear_darts","sequence"]},
+                                    "button":{"type":"string","enum":["A","B","UP","DOWN","LEFT","RIGHT"]},
+                                    "pressed":{"type":"boolean"},
+                                    "duration_ms":{"type":"number"},
+                                    "index":{"type":"string","description":"0-11 or next"},
+                                    "x":{"type":"number"},
+                                    "y":{"type":"number"},
+                                    "actions":{"type":"array","items":{"type":"object","properties":{"type":{"type":"string"},"button":{"type":"string"},"pressed":{"type":"boolean"},"duration_ms":{"type":"number"},"index":{"type":"string"},"x":{"type":"number"},"y":{"type":"number"},"actions":{"type":"array","items":{"type":"object"}}}}}
+                                },
+                                "required":["type"]
+                            }
+                        }
+                    })
                 }
                 "run_emulator_scenario" => {
-                    serde_json::json!({"type":"object","properties":{"steps":{"type":"array"},"timeout_ms":{"type":"number"}},"required":["steps"]})
+                    serde_json::json!({
+                        "type":"object",
+                        "properties":{
+                            "steps":{
+                                "type":"array",
+                                "items":{
+                                    "type":"object",
+                                    "properties":{
+                                        "type":{"type":"string"},
+                                        "ms":{"type":"number"},
+                                        "action":{"type":"object"}
+                                    }
+                                }
+                            },
+                            "timeout_ms":{"type":"number"}
+                        },
+                        "required":["steps"]
+                    })
                 }
                 "get_emulator_logs" => {
                     serde_json::json!({"type":"object","properties":{"max_lines":{"type":"number"}}})
@@ -577,29 +684,7 @@ async fn execute_host_tool(
             Ok(serde_json::json!({"ok":true,"message":"Emulator reloaded"}))
         }
         "control_emulator_input" => {
-            let action = args.get("action").cloned().ok_or("action is required")?;
-            let action_type = action.get("type").and_then(Value::as_str).unwrap_or("");
-            let command = match action_type {
-                "throw_dart" => {
-                    serde_json::json!({"type":"throw_dart","index":action.get("index"),"x":action.get("x"),"y":action.get("y")})
-                }
-                "remove_dart" => {
-                    serde_json::json!({"type":"remove_dart_at","x":action.get("x"),"y":action.get("y")})
-                }
-                "clear_darts" => serde_json::json!({"type":"clear_darts"}),
-                "set_button" => {
-                    serde_json::json!({"type":"set_button","button":action.get("button"),"pressed":action.get("pressed")})
-                }
-                "tap_button" => {
-                    serde_json::json!({"type":"set_button","button":action.get("button"),"pressed":true})
-                }
-                _ => return Ok(serde_json::json!({"ok":false,"error":"unsupported input action"})),
-            };
-            state
-                .emulator
-                .send(app, Some(workspace_root), command)
-                .await?;
-            Ok(serde_json::json!({"ok":true}))
+            execute_control_emulator_input(app, workspace_root, &args).await
         }
         "run_emulator_scenario" => {
             let steps = args
@@ -1218,30 +1303,139 @@ async fn execute_control_emulator_input(
     workspace_root: &Path,
     args: &Value,
 ) -> Result<Value, String> {
-    let state = app.state::<crate::commands::AppState>();
     let action = args.get("action").cloned().unwrap_or_else(|| args.clone());
-    let action_type = action.get("type").and_then(Value::as_str).unwrap_or("");
-    let command = match action_type {
-        "throw_dart" => {
-            serde_json::json!({"type":"throw_dart","index":action.get("index"),"x":action.get("x"),"y":action.get("y")})
-        }
-        "remove_dart" => {
-            serde_json::json!({"type":"remove_dart_at","x":action.get("x"),"y":action.get("y")})
-        }
-        "clear_darts" => serde_json::json!({"type":"clear_darts"}),
-        "set_button" => {
-            serde_json::json!({"type":"set_button","button":action.get("button"),"pressed":action.get("pressed")})
-        }
-        "tap_button" => {
-            serde_json::json!({"type":"set_button","button":action.get("button"),"pressed":true})
-        }
-        _ => return Ok(serde_json::json!({"ok":false,"error":"unsupported input action"})),
+    let steps = match plan_emulator_input(&action, 0) {
+        Ok(steps) => steps,
+        Err(reject) => return Ok(reject),
     };
-    state
-        .emulator
-        .send(app, Some(workspace_root), command)
-        .await?;
+    let state = app.state::<crate::commands::AppState>();
+    for step in steps {
+        state
+            .emulator
+            .send(app, Some(workspace_root), step.command)
+            .await?;
+        if step.wait_after_ms > 0 {
+            sleep(Duration::from_millis(step.wait_after_ms)).await;
+        }
+    }
     Ok(serde_json::json!({"ok":true}))
+}
+
+const TAP_BUTTON_DEFAULT_MS: u64 = 80;
+const TAP_BUTTON_MIN_MS: u64 = 50;
+const TAP_BUTTON_MAX_MS: u64 = 1_000;
+const THROW_DART_SETTLE_MS: u64 = 150;
+const MAX_INPUT_PLAN_DEPTH: usize = 4;
+const MAX_INPUT_PLAN_STEPS: usize = 30;
+
+struct EmulatorInputStep {
+    command: Value,
+    wait_after_ms: u64,
+}
+
+fn json_u64(value: Option<&Value>, default: u64) -> u64 {
+    value
+        .and_then(|v| v.as_u64().or_else(|| v.as_f64().map(|n| n as u64)))
+        .unwrap_or(default)
+}
+
+fn normalize_emulator_button(value: Option<&Value>) -> Option<String> {
+    let raw = value?.as_str()?.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    let upper = raw.to_ascii_uppercase();
+    let name = upper.strip_prefix("BTN_").unwrap_or(&upper);
+    matches!(name, "A" | "B" | "UP" | "DOWN" | "LEFT" | "RIGHT").then(|| name.to_owned())
+}
+
+fn tap_duration_ms(action: &Value) -> u64 {
+    json_u64(action.get("duration_ms"), TAP_BUTTON_DEFAULT_MS)
+        .clamp(TAP_BUTTON_MIN_MS, TAP_BUTTON_MAX_MS)
+}
+
+fn plan_emulator_input(action: &Value, depth: usize) -> Result<Vec<EmulatorInputStep>, Value> {
+    if depth > MAX_INPUT_PLAN_DEPTH {
+        return Err(serde_json::json!({"ok":false,"error":"input sequence is nested too deeply"}));
+    }
+    let action_type = action.get("type").and_then(Value::as_str).unwrap_or("");
+    let steps = match action_type {
+        "throw_dart" => vec![EmulatorInputStep {
+            command: serde_json::json!({
+                "type":"throw_dart",
+                "index": action.get("index"),
+                "x": action.get("x"),
+                "y": action.get("y"),
+            }),
+            wait_after_ms: THROW_DART_SETTLE_MS,
+        }],
+        "remove_dart" => vec![EmulatorInputStep {
+            command: serde_json::json!({
+                "type":"remove_dart_at",
+                "x": action.get("x"),
+                "y": action.get("y"),
+            }),
+            wait_after_ms: 0,
+        }],
+        "clear_darts" => vec![EmulatorInputStep {
+            command: serde_json::json!({"type":"clear_darts"}),
+            wait_after_ms: 0,
+        }],
+        "set_button" if action.get("pressed").is_none() => {
+            return plan_emulator_input(
+                &serde_json::json!({
+                    "type":"tap_button",
+                    "button": action.get("button"),
+                    "duration_ms": action.get("duration_ms"),
+                }),
+                depth,
+            );
+        }
+        "set_button" => {
+            let Some(button) = normalize_emulator_button(action.get("button")) else {
+                return Err(serde_json::json!({"ok":false,"error":"unknown button"}));
+            };
+            vec![EmulatorInputStep {
+                command: serde_json::json!({
+                    "type":"set_button",
+                    "button": button,
+                    "pressed": action.get("pressed").and_then(Value::as_bool).unwrap_or(false),
+                }),
+                wait_after_ms: 0,
+            }]
+        }
+        "tap_button" | "tap" | "press" => {
+            let Some(button) = normalize_emulator_button(action.get("button")) else {
+                return Err(serde_json::json!({"ok":false,"error":"unknown button"}));
+            };
+            let duration_ms = tap_duration_ms(action);
+            vec![
+                EmulatorInputStep {
+                    command: serde_json::json!({"type":"set_button","button":button,"pressed":true}),
+                    wait_after_ms: duration_ms,
+                },
+                EmulatorInputStep {
+                    command: serde_json::json!({"type":"set_button","button":button,"pressed":false}),
+                    wait_after_ms: 0,
+                },
+            ]
+        }
+        "sequence" => {
+            let Some(actions) = action.get("actions").and_then(Value::as_array) else {
+                return Err(serde_json::json!({"ok":false,"error":"sequence requires actions"}));
+            };
+            let mut planned = Vec::new();
+            for child in actions {
+                planned.extend(plan_emulator_input(child, depth + 1)?);
+            }
+            planned
+        }
+        _ => return Err(serde_json::json!({"ok":false,"error":"unsupported input action"})),
+    };
+    if steps.len() > MAX_INPUT_PLAN_STEPS {
+        return Err(serde_json::json!({"ok":false,"error":"input sequence exceeds 30 steps"}));
+    }
+    Ok(steps)
 }
 
 const SKILL_IDS: &[&str] = &[
@@ -1358,7 +1552,7 @@ async fn execute_check_python(
     )
 }
 
-fn safe_path(root: &Path, value: Option<&Value>) -> Result<PathBuf, String> {
+pub(crate) fn safe_path(root: &Path, value: Option<&Value>) -> Result<PathBuf, String> {
     let rel = value.and_then(Value::as_str).unwrap_or(".");
     let path = Path::new(rel);
     if path.is_absolute()
@@ -1440,51 +1634,16 @@ fn execute_workspace_tool_with_app(
                 serde_json::json!({"ok":true,"content":selected,"startLine":start,"endLine":end,"lineCount":lines.len()}),
             )
         }
-        "write_file" => {
-            let path = safe_path(&root, args.get("path"))?;
-            let content = args
-                .get("content")
-                .and_then(Value::as_str)
-                .ok_or("content is required")?;
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        "apply_patch" => {
+            let patch = args.get("patch").and_then(Value::as_str).ok_or("patch is required")?;
+            let result = crate::file_patch::apply_patch(&root, patch)?;
+            if result.get("ok").and_then(Value::as_bool) == Some(true) {
+                if let Some(app) = app {
+                    crate::commands::publish_workspace_classification(app);
+                }
+                return Ok(crate::commands::attach_workspace_status(&root, result));
             }
-            std::fs::write(path, content).map_err(|e| e.to_string())?;
-            Ok(serde_json::json!({"ok":true}))
-        }
-        "replace_in_file" => {
-            let path = safe_path(&root, args.get("path"))?;
-            let find = args
-                .get("find")
-                .and_then(Value::as_str)
-                .ok_or("find is required")?;
-            if find.is_empty() {
-                return Err("find must be non-empty".into());
-            }
-            let replace = args.get("replace").and_then(Value::as_str).unwrap_or("");
-            let replace_all = args
-                .get("replace_all")
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
-            let content = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-            let count = content.matches(find).count();
-            if count == 0 {
-                return Ok(
-                    serde_json::json!({"ok":false,"error":"find target not present in file"}),
-                );
-            }
-            if count > 1 && !replace_all {
-                return Ok(
-                    serde_json::json!({"ok":false,"error":format!("find matches {count} times; set replace_all to true") }),
-                );
-            }
-            let next = if replace_all {
-                content.replace(find, replace)
-            } else {
-                content.replacen(find, replace, 1)
-            };
-            std::fs::write(path, next).map_err(|e| e.to_string())?;
-            Ok(serde_json::json!({"ok":true,"replaced":if replace_all {count} else {1}}))
+            Ok(result)
         }
         "grep_files" => {
             let pattern = args
@@ -1513,7 +1672,16 @@ fn execute_workspace_tool_with_app(
                 .unwrap_or(200)
                 .clamp(1, 1000) as usize;
             let mut files = Vec::new();
-            collect_files(&root, &start, None, &mut files, 10_000)?;
+            if start.is_file() {
+                let rel = start
+                    .strip_prefix(&root)
+                    .unwrap_or(&start)
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                files.push(rel);
+            } else {
+                collect_files(&root, &start, None, &mut files, 10_000)?;
+            }
             let mut matches = Vec::new();
             for rel in files {
                 if matches.len() >= cap {
@@ -1579,7 +1747,10 @@ fn execute_workspace_tool_with_app(
                 std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
             }
             std::fs::copy(source_path, destination).map_err(|e| e.to_string())?;
-            Ok(serde_json::json!({"ok":true}))
+            Ok(crate::commands::attach_workspace_status(
+                &root,
+                serde_json::json!({"ok":true}),
+            ))
         }
         "copy_chat_attachment" => {
             let attachment_id = args
@@ -1612,18 +1783,24 @@ fn execute_workspace_tool_with_app(
                 return Err("attachment source not found".to_owned());
             }
             if source == destination {
-                return Ok(serde_json::json!({"ok":true,"path":relative}));
+                return Ok(crate::commands::attach_workspace_status(
+                    &root,
+                    serde_json::json!({"ok":true,"path":relative}),
+                ));
             }
             if let Some(parent) = destination.parent() {
                 std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
             }
             std::fs::copy(&source, &destination).map_err(|e| e.to_string())?;
             let output = destination
-                .strip_prefix(root)
+                .strip_prefix(&root)
                 .unwrap_or(&destination)
                 .to_string_lossy()
                 .replace('\\', "/");
-            Ok(serde_json::json!({"ok":true,"path":output,"source":relative}))
+            Ok(crate::commands::attach_workspace_status(
+                &root,
+                serde_json::json!({"ok":true,"path":output,"source":relative}),
+            ))
         }
         _ => Err(format!("unknown workspace tool: {name}")),
     }
@@ -1688,6 +1865,7 @@ pub fn validate_agent_configuration(
     base_url: &str,
     api_key: &str,
     model: &str,
+    api_format: Option<&str>,
 ) -> Result<(), String> {
     crate::ensure_rustls_crypto_provider();
     // Configuration validation must stay side-effect free. In particular, do
@@ -1697,7 +1875,7 @@ pub fn validate_agent_configuration(
     let client = reqwest::Client::builder()
         .build()
         .map_err(|error| error.to_string())?;
-    let _agent = build_agent_with_http_client(base_url, api_key, model, None, None, None, client)?;
+    let _agent = build_agent_with_http_client(base_url, api_key, model, None, None, None, client, api_format)?;
     Ok(())
 }
 
@@ -1757,6 +1935,7 @@ where
         cancel,
         app,
         None,
+        None,
         on_event,
     )
     .await
@@ -1773,6 +1952,7 @@ pub async fn stream_prompt_with_app_headers<F>(
     cancel: Arc<AtomicBool>,
     app: Option<AppHandle>,
     headers: Option<HeaderMap>,
+    api_format: Option<String>,
     mut on_event: F,
 ) -> Result<StreamOutcome, String>
 where
@@ -1782,10 +1962,11 @@ where
         base_url,
         api_key,
         model,
-        None,
+        Some(AGENT_PREAMBLE),
         workspace_root,
         app,
         headers,
+        api_format.as_deref(),
     )
     .await?;
     let lifecycle_hook = ToolLifecycleHook::default();
@@ -1795,10 +1976,18 @@ where
         .stream_prompt(prompt)
         .max_turns(MAX_TURNS)
         .add_hook(lifecycle_hook);
+    // previous_response_id is OpenAI Responses API specific - only add for Responses format
+    let format = api_format
+        .as_deref()
+        .and_then(|s| s.parse::<ApiFormat>().ok())
+        .unwrap_or_default()
+        .resolve();
     if let Some(previous_response_id) = previous_response_id {
-        request = request.replace_additional_params(
-            serde_json::json!({"previous_response_id": previous_response_id}),
-        );
+        if format == ApiFormat::Responses {
+            request = request.replace_additional_params(
+                serde_json::json!({"previous_response_id": previous_response_id}),
+            );
+        }
     }
     let mut stream = request.await;
     let mut output = String::new();
@@ -1829,7 +2018,8 @@ where
         let item = match item {
             Ok(item) => item,
             Err(error) => {
-                let message = error.to_string();
+                let error_string = error.to_string();
+                let message = error_string;
                 for (call_id, (name, started_at)) in active_tools.drain() {
                     on_event(StreamEvent::ToolCallFinished {
                         run_id: run_id.clone(),
@@ -2011,7 +2201,7 @@ mod tests {
 
     #[test]
     fn accepts_openai_compatible_base_url_without_key_for_custom_gateways() {
-        assert!(validate_agent_configuration("http://localhost:4000/v1", "", "model").is_ok());
+        assert!(validate_agent_configuration("http://localhost:4000/v1", "", "model", None).is_ok());
     }
 
     #[test]
@@ -2024,6 +2214,17 @@ mod tests {
         );
         assert!(agent.is_ok());
         assert_eq!(MAX_TURNS, 128);
+    }
+
+    #[test]
+    fn production_stream_uses_outcome_only_preamble() {
+        assert!(AGENT_PREAMBLE.contains("The user's request is the source of truth"));
+        assert!(AGENT_PREAMBLE.contains("Choose the design, files, tools, and order"));
+        assert!(AGENT_PREAMBLE.contains("leave the workspace runnable before finishing"));
+        assert!(AGENT_PREAMBLE.contains("Do not load Dartsnut skills"));
+        assert!(AGENT_PREAMBLE.contains("existing-file change"));
+        assert!(AGENT_PREAMBLE.contains("bottom screen is the 64x32 strip"));
+        assert!(GET_DARTSNUT_SKILL_DESCRIPTION.contains("Do not load skills for existing"));
     }
 
     #[test]
@@ -2067,6 +2268,22 @@ mod tests {
             std::fs::read(root.join("assets/pixellab/image-generati/image-01.png")).unwrap(),
             bytes
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn grep_files_accepts_single_file_path() {
+        let root = std::env::temp_dir().join(format!("dartsnut-grep-file-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("main.py"), "print('jump')\nprint('stay')\n").unwrap();
+        let matches = execute_workspace_tool(
+            "grep_files",
+            &root,
+            serde_json::json!({"path":"main.py","pattern":"jump"}),
+        )
+        .unwrap();
+        assert_eq!(matches["matches"][0]["path"], "main.py");
+        assert_eq!(matches["matches"][0]["line"], 1);
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -2119,6 +2336,77 @@ mod tests {
     }
 
     #[test]
+    fn apply_patch_adds_and_updates_inside_workspace() {
+        let root = std::env::temp_dir().join(format!("dartsnut-apply-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("main.txt"), "hello\nworld\n").unwrap();
+        let patch = "*** Begin Patch\n*** Add File: extra.txt\n+hi\n*** Update File: main.txt\n@@\n hello\n-world\n+there\n*** End Patch";
+        let result = execute_workspace_tool(
+            "apply_patch",
+            &root,
+            serde_json::json!({"patch": patch}),
+        )
+        .unwrap();
+        assert_eq!(result["ok"], true);
+        assert_eq!(result["files"][0]["action"], "add");
+        assert_eq!(result["files"][1]["action"], "update");
+        assert_eq!(std::fs::read(root.join("extra.txt")).unwrap(), b"hi");
+        assert_eq!(
+            std::fs::read_to_string(root.join("main.txt")).unwrap(),
+            "hello\nthere\n"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn apply_patch_reports_missing_pyproject_workspace_status() {
+        let root = std::env::temp_dir().join(format!("dartsnut-apply-status-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let patch = "*** Begin Patch\n*** Add File: extra.txt\n+hi\n*** End Patch";
+        let result = execute_workspace_tool(
+            "apply_patch",
+            &root,
+            serde_json::json!({"patch": patch}),
+        )
+        .unwrap();
+        assert_eq!(result["ok"], true);
+        assert_eq!(result["workspace"]["reason"], "missing_pyproject");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn apply_patch_reports_runnable_game_workspace() {
+        let root = std::env::temp_dir().join(format!("dartsnut-apply-game-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let patch = "*** Begin Patch\n*** Add File: pyproject.toml\n+[project]\n+name = \"demo\"\n+version = \"1.2.3\"\n+dependencies = [\"pydartsnut\"]\n*** Add File: main.py\n+print('ok')\n*** End Patch";
+        let result = execute_workspace_tool(
+            "apply_patch",
+            &root,
+            serde_json::json!({"patch": patch}),
+        )
+        .unwrap();
+        assert_eq!(result["ok"], true);
+        assert_eq!(result["workspace"]["ok"], true);
+        assert_eq!(result["workspace"]["projectType"], "game");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn apply_patch_rejects_workspace_escape() {
+        let root = std::env::temp_dir().join(format!("dartsnut-apply-jail-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let patch = "*** Begin Patch\n*** Add File: ../secret\n+x\n*** End Patch";
+        let err = execute_workspace_tool(
+            "apply_patch",
+            &root,
+            serde_json::json!({"patch": patch}),
+        )
+        .unwrap_err();
+        assert_eq!(err, "path escapes workspace root");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn bundled_skill_tool_validates_ids_and_returns_markdown() {
         let root = std::env::temp_dir().join(format!("dartsnut-skill-{}", uuid::Uuid::new_v4()));
         let skills = root.join("src-tauri/resources/skills");
@@ -2150,5 +2438,49 @@ mod tests {
                 .is_err()
         );
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn tap_button_presses_then_releases() {
+        let steps = plan_emulator_input(&serde_json::json!({"type":"tap_button","button":"btn_a"}), 0)
+            .unwrap();
+        assert_eq!(steps.len(), 2);
+        assert_eq!(
+            steps[0].command,
+            serde_json::json!({"type":"set_button","button":"A","pressed":true})
+        );
+        assert_eq!(steps[0].wait_after_ms, TAP_BUTTON_DEFAULT_MS);
+        assert_eq!(
+            steps[1].command,
+            serde_json::json!({"type":"set_button","button":"A","pressed":false})
+        );
+        assert_eq!(steps[1].wait_after_ms, 0);
+    }
+
+    #[test]
+    fn set_button_without_pressed_taps() {
+        let steps = plan_emulator_input(&serde_json::json!({"type":"set_button","button":"UP"}), 0)
+            .unwrap();
+        assert_eq!(steps.len(), 2);
+        assert_eq!(steps[0].command["pressed"], true);
+        assert_eq!(steps[1].command["pressed"], false);
+    }
+
+    #[test]
+    fn sequence_flattens_nested_actions() {
+        let steps = plan_emulator_input(
+            &serde_json::json!({
+                "type":"sequence",
+                "actions":[
+                    {"type":"tap_button","button":"A","duration_ms":50},
+                    {"type":"throw_dart","index":"next","x":32,"y":48}
+                ]
+            }),
+            0,
+        )
+        .unwrap();
+        assert_eq!(steps.len(), 3);
+        assert_eq!(steps[2].command["type"], "throw_dart");
+        assert_eq!(steps[2].wait_after_ms, THROW_DART_SETTLE_MS);
     }
 }

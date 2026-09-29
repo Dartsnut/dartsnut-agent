@@ -1,6 +1,6 @@
 ---
 name: dartsnut-game
-description: Dartsnut pygame game loop, dependencies, dart and button APIs, slot colors, and game-specific small-screen layout. Load when creating or changing a game.
+description: Pygame game-loop, machine-input, and dependency reference; load when adding game APIs, not for existing HUD text edits.
 ---
 
 # Dartsnut game

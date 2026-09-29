@@ -10,5 +10,6 @@ export function shouldSetInitialChatTitle(
 ): boolean {
   if (!firstUserMessage?.trim()) return false;
   if (!requestChatId) return true;
-  return activeChat?.id === requestChatId && activeChat.title === "New chat";
+  if (!activeChat) return true;
+  return activeChat.id === requestChatId && activeChat.title === "New chat";
 }

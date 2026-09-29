@@ -4,7 +4,7 @@
 **/.vite
 .env
 .env.release.local
-.cursor
+.cursor/
 # Per-workspace agent session + transaction logs (when a project folder is opened in-repo)
 **/.dartsnut/
 .DS_Store
@@ -25,3 +25,4 @@ openspec
 
 # Cursor debug NDJSON logs (filename is debug-<sessionId>.log; session id is per chat/run)
 /debug-*.log
+
