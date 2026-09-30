@@ -126,6 +126,7 @@ import { WindowControls } from "./WindowControls";
 import { startTauriAppUpdateCheck } from "./appUpdateStartup";
 import { createAutomaticAppUpdateDownloader } from "./appUpdateAutoDownload";
 import { appUpdateSettingsModel } from "./appUpdateSettings";
+import { fetchGithubReleaseNotes } from "./appUpdateReleaseNotes";
 import {
   chatPaneRatioFromWidth,
   chatPaneWidthFromRatio,
@@ -218,6 +219,7 @@ type UpdatePromptState = AppUpdateStatus & {
   installing: boolean;
   error: string | null;
 };
+type AppReleaseNotes = { version: string; phase: "loading" | "loaded" | "error"; body: string | null };
 
 const AUTO_SCROLL_BOTTOM_THRESHOLD = 24;
 /** Keep in sync with composer textarea `max-h-[200px]` */
@@ -451,17 +453,23 @@ type UpdateReadyOverlayProps = {
   autoUpdateEnabled: boolean;
   installing: boolean;
   error: string | null;
+  releaseNotes: AppReleaseNotes | null;
   onDownload: () => void;
   onAutoUpdateChange: (enabled: boolean) => void;
   onInstallNow: () => void;
   onLater: () => void;
 };
 
+function preventReleaseNoteNavigation(event: ReactMouseEvent<HTMLElement>) {
+  if (event.target instanceof Element && event.target.closest("a")) event.preventDefault();
+}
+
 export function UpdateReadyOverlay({
   status,
   autoUpdateEnabled,
   installing,
   error,
+  releaseNotes,
   onDownload,
   onAutoUpdateChange,
   onInstallNow,
@@ -471,6 +479,7 @@ export function UpdateReadyOverlay({
     return null;
   }
   const isAvailable = status.kind === "available";
+  const matchingNotes = releaseNotes?.version === status.availableVersion ? releaseNotes : null;
   return (
     <div className="app-update-overlay" role="dialog" aria-modal="true" aria-labelledby="app-update-title">
       <div className="app-update-panel">
@@ -506,6 +515,16 @@ export function UpdateReadyOverlay({
           {error ? (
             <p className="app-update-panel__error" role="alert">{error}</p>
           ) : null}
+          <section className="app-update-panel__release-notes" aria-labelledby="app-update-release-notes-title" onClick={preventReleaseNoteNavigation} onAuxClick={preventReleaseNoteNavigation}>
+            <h3 id="app-update-release-notes-title">Release notes</h3>
+            <div className="app-update-panel__release-notes-body" tabIndex={0}>
+              {matchingNotes?.phase === "loaded"
+                ? matchingNotes.body
+                  ? <AgentMarkdownBody source={matchingNotes.body} />
+                  : <p>No release notes published for this version.</p>
+                : <p>{matchingNotes?.phase === "error" ? "Release notes unavailable right now." : "Loading release notes…"}</p>}
+            </div>
+          </section>
         </div>
         <div className="app-update-panel__actions">
           <button
@@ -1173,6 +1192,7 @@ export function App() {
     message: "Preparing submission..."
   });
   const [appUpdate, setAppUpdate] = useState<UpdatePromptState | null>(null);
+  const [appReleaseNotes, setAppReleaseNotes] = useState<AppReleaseNotes | null>(null);
   const [autoUpdateEnabled, setAutoUpdateEnabled] = useState(false);
   const [legacyChatPaneWidth] = useState(getStoredChatPaneWidth);
   const [chatPaneRatio, setChatPaneRatio] = useState<number | null>(getStoredChatPaneRatio);
@@ -1463,6 +1483,30 @@ export function App() {
     () => createAutomaticAppUpdateDownloader(handleDownloadAppUpdate),
     [handleDownloadAppUpdate]
   );
+  const releaseNotesVersion =
+    appUpdate && (appUpdate.kind === "available" || appUpdate.kind === "downloading" || appUpdate.kind === "ready") &&
+    appUpdate.availableVersion && appUpdate.dismissedVersion !== appUpdate.availableVersion
+      ? appUpdate.availableVersion
+      : null;
+
+  useEffect(() => {
+    if (!releaseNotesVersion) {
+      setAppReleaseNotes(null);
+      return;
+    }
+    const controller = new AbortController();
+    setAppReleaseNotes({ version: releaseNotesVersion, phase: "loading", body: null });
+    void fetchGithubReleaseNotes(releaseNotesVersion, controller.signal).then((body) => {
+      if (!controller.signal.aborted) {
+        setAppReleaseNotes({ version: releaseNotesVersion, phase: "loaded", body });
+      }
+    }).catch(() => {
+      if (!controller.signal.aborted) {
+        setAppReleaseNotes({ version: releaseNotesVersion, phase: "error", body: null });
+      }
+    });
+    return () => controller.abort();
+  }, [releaseNotesVersion]);
 
   useEffect(() => {
     autoDownloadAvailableUpdate(appUpdate, autoUpdateEnabled);
@@ -3919,6 +3963,7 @@ export function App() {
         autoUpdateEnabled={autoUpdateEnabled}
         installing={appUpdate?.installing ?? false}
         error={appUpdate?.error ?? null}
+        releaseNotes={appReleaseNotes}
         onDownload={handleDownloadAppUpdate}
         onAutoUpdateChange={handleAutoUpdateChange}
         onInstallNow={handleInstallAppUpdateNow}

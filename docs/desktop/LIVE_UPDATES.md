@@ -22,6 +22,15 @@ app-data directory. Skipping the popup only dismisses it for that version;
 Settings continues to show the version and an Update action. Update downloads
 an available version or installs one already ready, matching the popup action.
 
+For available and downloaded updates, the popup loads the published GitHub
+release body by the updater's exact `availableVersion` tag from
+`Dartsnut/dartsnut-agent`. Publish a non-draft release with that tag and body
+to show its Markdown notes. The updater manifest's `notes` field is not used:
+it may differ from the GitHub release. If the release has no body, the popup
+shows an empty-state message; if GitHub cannot be reached (including API rate
+limits), it shows an unavailable message without blocking update actions.
+Long release bodies scroll independently while the update actions remain visible.
+
 ## Local UI preview
 
 `pnpm dev` injects the configured platform feed from `.env`. Direct `tauri dev`
