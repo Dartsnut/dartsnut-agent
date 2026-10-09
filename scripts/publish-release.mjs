@@ -65,7 +65,7 @@ try {
     version,
     artifacts,
     description: config.description,
-    isCurrent: false,
+    isCurrent: config.isCurrent,
     onStage: stage
   });
   stage("publish complete");

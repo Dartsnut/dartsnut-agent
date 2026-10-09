@@ -74,5 +74,6 @@ objects.
   signed NSIS executable (the installer is also the updater payload); older
   toolchains may emit its equivalent `.nsis.zip` wrapper. Portable builds are
   not the standard auto-update path.
-- Tauri installer release rows are published with `is_current: false` until
-  Tauri becomes the current installer channel.
+- Tauri installer release rows default to `is_current: false`. Set
+  `DARTSNUT_RELEASE_IS_CURRENT=true` to mark a release as the current installer
+  channel.

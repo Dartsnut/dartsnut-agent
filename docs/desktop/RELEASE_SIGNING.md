@@ -84,5 +84,5 @@ updater payload); the publisher uploads it as `.nsis.exe` and also accepts the
 older `.nsis.zip` wrapper.
 Uploaded updater files receive a
 `dartsnut-agent-tauri-` prefix. Existing external legacy updater objects in the
-shared OSS directory remain untouched. Installer release records use
-`is_current: false` for now.
+shared OSS directory remain untouched. Installer release records can be marked
+as the current release via `DARTSNUT_RELEASE_IS_CURRENT=true`.
