@@ -147,8 +147,6 @@ export const MyGamesPanel = memo(function MyGamesPanel({
   onSubmitProgress
 }: MyGamesPanelProps) {
   const api = tauriClient;
-  const iconInputRef = useRef<HTMLInputElement | null>(null);
-  const previewInputRef = useRef<HTMLInputElement | null>(null);
   const stagedImagesRef = useRef<{ icon: StagedImage | null; previews: StagedImage[] }>({ icon: null, previews: [] });
   const optimisticVersionsRef = useRef(new Map<string, CommunityVersionSummary[]>());
   const lastWorkspaceRefreshKeyRef = useRef(communityWorkspaceRefreshKey);
@@ -341,28 +339,31 @@ export const MyGamesPanel = memo(function MyGamesPanel({
     }
   }, [loadVersions, screen, selectedProject]);
 
-  function stageFile(file: File): StagedImage | null {
-    const filePath = api.getPathForFile(file) || "";
-    if (!filePath) {
-      setError(`Could not read ${file.name}.`);
-      return null;
-    }
-    return { filePath, name: file.name, previewUrl: URL.createObjectURL(file) };
+  function stageNative(file: { path: string; name: string; dataUrl: string }): StagedImage {
+    return { filePath: file.path, name: file.name, previewUrl: file.dataUrl };
   }
 
-  function chooseIcon(file: File | null | undefined): void {
-    if (!file) return;
-    const staged = stageFile(file);
-    if (!staged) return;
+  async function pickIcon(): Promise<void> {
+    const res = await api.pickImages({ multiple: false });
+    if (!res.ok) return;
+    const file = res.files[0];
+    if (!file) {
+      setError("Could not read the selected icon.");
+      return;
+    }
     revokeStaged(icon);
-    setIcon(staged);
+    setIcon(stageNative(file));
     setError(null);
   }
 
-  function choosePreviews(files: FileList | null | undefined): void {
-    if (!files?.length) return;
-    const staged = Array.from(files).map(stageFile).filter((item): item is StagedImage => Boolean(item));
-    setPreviews((current) => [...current, ...staged]);
+  async function pickPreviews(): Promise<void> {
+    const res = await api.pickImages({ multiple: true });
+    if (!res.ok) return;
+    if (!res.files.length) {
+      setError("Could not read the selected preview images.");
+      return;
+    }
+    setPreviews((current) => [...current, ...res.files.map(stageNative)]);
     setError(null);
   }
 
@@ -819,7 +820,7 @@ export const MyGamesPanel = memo(function MyGamesPanel({
                 </div>
                 <div className="mt-3">
                   <p className="mb-1 text-xs text-[var(--color-text-subtle)]">Project icon</p>
-                  <button type="button" className="flex h-20 w-20 items-center justify-center overflow-hidden rounded-lg border border-dashed border-edge bg-[var(--color-surface)] text-xs text-[var(--color-text-subtle)] hover:border-[var(--color-neon-coral-dim)]" onClick={() => iconInputRef.current?.click()}>
+                  <button type="button" className="flex h-20 w-20 items-center justify-center overflow-hidden rounded-lg border border-dashed border-edge bg-[var(--color-surface)] text-xs text-[var(--color-text-subtle)] hover:border-[var(--color-neon-coral-dim)]" onClick={() => void pickIcon()}>
                     {icon ? <img src={icon.previewUrl} alt="Selected project icon" className="h-full w-full object-cover" /> : "Choose icon"}
                   </button>
                 </div>
@@ -856,7 +857,7 @@ export const MyGamesPanel = memo(function MyGamesPanel({
               {blockingVersion ? <p className="mt-3 rounded-md border border-amber-400/30 bg-amber-400/10 px-2.5 py-2 text-xs text-amber-700 dark:text-amber-200">This project already has a draft or version under review. Withdraw it before uploading another version.</p> : null}
 
               <div className="mt-3">
-                <div className="mb-2 flex items-center justify-between"><p className="text-xs text-[var(--color-text-subtle)]">Preview images{previews.some((preview) => preview.existingUrl) ? " · previous release" : ""}</p><button type="button" className="ui-toolbar-btn h-7 px-2 text-xs" onClick={() => previewInputRef.current?.click()}>Add</button></div>
+                <div className="mb-2 flex items-center justify-between"><p className="text-xs text-[var(--color-text-subtle)]">Preview images{previews.some((preview) => preview.existingUrl) ? " · previous release" : ""}</p><button type="button" className="ui-toolbar-btn h-7 px-2 text-xs" onClick={() => void pickPreviews()}>Add</button></div>
                 <div className="grid grid-cols-3 gap-2">
                   {previews.map((preview, index) => (
                     <div key={`${preview.filePath}-${index}`} className="group relative aspect-square overflow-hidden rounded-md border border-edge bg-[var(--color-surface)]">
@@ -864,7 +865,7 @@ export const MyGamesPanel = memo(function MyGamesPanel({
                       <button type="button" aria-label={`Remove ${preview.name}`} className="absolute right-1 top-1 rounded bg-black/70 px-1.5 py-0.5 text-[10px] text-white opacity-0 transition group-hover:opacity-100 group-focus-within:opacity-100" onClick={() => { revokeStaged(preview); setPreviews((current) => current.filter((_, itemIndex) => itemIndex !== index)); }}>Remove</button>
                     </div>
                   ))}
-                  {!previews.length ? <button type="button" className="aspect-square rounded-md border border-dashed border-edge bg-[var(--color-surface)] text-xs text-[var(--color-text-subtle)]" onClick={() => previewInputRef.current?.click()}>Add preview</button> : null}
+                  {!previews.length ? <button type="button" className="aspect-square rounded-md border border-dashed border-edge bg-[var(--color-surface)] text-xs text-[var(--color-text-subtle)]" onClick={() => void pickPreviews()}>Add preview</button> : null}
                 </div>
               </div>
             </section>
@@ -881,8 +882,6 @@ export const MyGamesPanel = memo(function MyGamesPanel({
         </div>
       ) : null}
 
-      <input ref={iconInputRef} type="file" accept="image/png,image/jpeg,image/webp" className="hidden" onChange={(event) => { chooseIcon(event.target.files?.[0]); event.currentTarget.value = ""; }} />
-      <input ref={previewInputRef} type="file" accept="image/png,image/jpeg,image/webp" multiple className="hidden" onChange={(event) => { choosePreviews(event.target.files); event.currentTarget.value = ""; }} />
 
       {versionConflict ? (
         <div className="community-confirm-layer" role="dialog" aria-modal="true" aria-labelledby="version-conflict-title">

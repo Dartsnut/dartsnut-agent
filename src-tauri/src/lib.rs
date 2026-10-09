@@ -161,6 +161,7 @@ pub fn run() {
             desktop_commands::check_app_update,
             desktop_commands::set_shell_ui_theme,
             desktop_commands::pick_workspace,
+            desktop_commands::pick_images,
             desktop_commands::machine_mcp_submit_question_answer,
             desktop_commands::agent_question_submit_answer,
             desktop_commands::emulator_command,

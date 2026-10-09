@@ -32,7 +32,7 @@ describe("Tauri client command contract", () => {
       "communityCancelGoogleLogin", "communityLogout", "communityGetLlmQuota", "communityListDeployDevices",
       "communityListMyGames", "communityGetPublishOptions", "communityListAppVersions", "communityCreateApp",
       "communityUploadNativeImage", "communitySubmitAppVersion", "communityUpdateWorkspaceVersion",
-      "onCommunitySubmitProgress", "communityWithdrawAppVersion", "getPathForFile"
+      "onCommunitySubmitProgress", "communityWithdrawAppVersion", "getPathForFile", "pickImages"
     ];
     expect(Object.keys(api).sort()).toEqual(expectedTopLevel.sort());
   });

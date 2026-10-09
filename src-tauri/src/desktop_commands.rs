@@ -778,6 +778,72 @@ pub async fn pick_workspace(app: AppHandle, payload: Option<Value>) -> Value {
 }
 
 #[tauri::command]
+pub async fn pick_images(app: AppHandle, payload: Option<Value>) -> Value {
+    let multiple = payload
+        .as_ref()
+        .and_then(|value| value.get("multiple").and_then(Value::as_bool))
+        .unwrap_or(false);
+    
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    
+    if multiple {
+        app.dialog()
+            .file()
+            .add_filter("Images", &["png", "jpg", "jpeg", "webp"])
+            .pick_files(move |paths| {
+                let _ = sender.send(paths);
+            });
+    } else {
+        app.dialog()
+            .file()
+            .add_filter("Images", &["png", "jpg", "jpeg", "webp"])
+            .pick_file(move |path| {
+                let _ = sender.send(path.map(|p| vec![p]));
+            });
+    }
+    
+    match receiver.await.ok().flatten() {
+        Some(paths) => {
+            let mut files = Vec::new();
+            for p in paths.iter() {
+                let path_str = p.to_string();
+                let ext = Path::new(&path_str)
+                    .extension()
+                    .and_then(|v| v.to_str())
+                    .unwrap_or("")
+                    .to_lowercase();
+                let mime = match ext.as_str() {
+                    "jpg" | "jpeg" => "image/jpeg",
+                    "webp" => "image/webp",
+                    _ => "image/png",
+                };
+                let name = Path::new(&path_str)
+                    .file_name()
+                    .and_then(|v| v.to_str())
+                    .unwrap_or("image")
+                    .to_owned();
+                let Ok(bytes) = tokio::fs::read(&path_str).await else {
+                    continue;
+                };
+                let data_url = format!(
+                    "data:{mime};base64,{}",
+                    base64::engine::general_purpose::STANDARD.encode(bytes)
+                );
+                files.push(json!({"path": path_str, "name": name, "dataUrl": data_url}));
+            }
+            json!({
+                "ok": true,
+                "files": files
+            })
+        }
+        None => json!({
+            "ok": false,
+            "cancelled": true
+        }),
+    }
+}
+
+#[tauri::command]
 pub fn machine_mcp_submit_question_answer(
     app: AppHandle,
     state: tauri::State<'_, crate::commands::AppState>,
@@ -1910,7 +1976,26 @@ pub async fn community_get_publish_options(
     );
     let widget = sd.get("WIDGET").cloned().unwrap_or_else(|| json!({}));
     let workspace = state.workspace_root.lock().ok().and_then(|v| v.clone());
-    let defaults = workspace.and_then(|root| std::fs::read_to_string(root.join("conf.json")).ok().and_then(|s|serde_json::from_str::<Value>(&s).ok())).map(|c|json!({"eligible":true,"appId":c.get("appId").or_else(||c.get("app_id")).cloned().unwrap_or(Value::String(String::new())),"projectType":workspace_project_type(&c),"appName":c.get("name").cloned().unwrap_or(Value::String(String::new())),"version":c.get("version").cloned().unwrap_or(Value::String("0.0.1".into())),"description":c.get("description").cloned().unwrap_or(Value::String(String::new())),"widgetSize":c.get("widgetSize").cloned().unwrap_or(Value::String(String::new()))})).unwrap_or_else(||json!({"eligible":false,"appId":"","projectType":null,"appName":"","version":"0.0.1","description":"","widgetSize":""}));
+    let status = crate::commands::eligibility_for_root(workspace.as_deref());
+    let conf = workspace
+        .as_deref()
+        .and_then(|root| std::fs::read_to_string(root.join("conf.json")).ok())
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        .unwrap_or(Value::Null);
+    let defaults = if status.get("ok").and_then(Value::as_bool) == Some(true) {
+        let app_id = status.get("appId").cloned().unwrap_or_else(|| json!(""));
+        json!({
+            "eligible": true,
+            "appId": app_id,
+            "projectType": status.get("projectType").cloned().unwrap_or(Value::Null),
+            "appName": conf.get("name").cloned().unwrap_or_else(|| app_id.clone()),
+            "version": status.get("version").cloned().unwrap_or_else(|| json!("0.0.1")),
+            "description": conf.get("description").cloned().unwrap_or_else(|| json!("")),
+            "widgetSize": conf.get("widgetSize").cloned().unwrap_or_else(|| json!(""))
+        })
+    } else {
+        json!({"eligible":false,"appId":"","projectType":null,"appName":"","version":"0.0.1","description":"","widgetSize":""})
+    };
     Ok(
         json!({"ok":true,"games":games,"widgets":widgets,"gameCategories":game_categories,"widgetCategories":widget_categories,"gameControls":game_controls,"widgetControls":normalize_options(&widget.get("CONTROL_OPTIONS").and_then(Value::as_array).cloned().unwrap_or_default()),"widgetSizes":normalize_options(&widget.get("WIDGET_SIZE_OPTIONS").and_then(Value::as_array).cloned().unwrap_or_default()),"workspace":defaults}),
     )
@@ -2111,11 +2196,19 @@ pub async fn community_submit_app_version(
         .ok()
         .and_then(|s| serde_json::from_str::<Value>(&s).ok())
         .unwrap_or(Value::Null);
-    let app_id = conf
+    let app_id_owned = conf
         .get("appId")
         .or_else(|| conf.get("app_id"))
         .and_then(Value::as_str)
-        .unwrap_or("");
+        .map(str::to_owned)
+        .or_else(|| {
+            crate::commands::eligibility_for_root(Some(root.as_path()))
+                .get("appId")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .unwrap_or_default();
+    let app_id = app_id_owned.as_str();
     let archive =
         crate::deploy::archive::create_workspace_archive(&root).map_err(|e| e.to_string())?;
     let part = multipart::Part::bytes(archive).file_name("dartsnut.zip");
