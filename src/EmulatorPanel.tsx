@@ -119,6 +119,7 @@ export function EmulatorPanel({
   const [captureToast, setCaptureToast] = useState<string | null>(null);
   const [captureFolder, setCaptureFolder] = useState<string | null>(null);
   const [venvPrepDisplay, setVenvPrepDisplay] = useState<VenvPrepDisplay>(() => createHiddenVenvPrepDisplay());
+  const [frameRenderError, setFrameRenderError] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const zoomCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const logsBodyRef = useRef<HTMLDivElement | null>(null);
@@ -143,6 +144,7 @@ export function EmulatorPanel({
   const venvPrepHideTimerRef = useRef<number | null>(null);
   const stateRef = useRef<EmulatorStateSnapshot>(defaultState);
   const remoteSideloadActiveRef = useRef(false);
+  const restartFrameWorkerRef = useRef<(() => void) | null>(null);
   const normalizedWidgetType = state.widgetType?.toLowerCase() ?? null;
   const activeProjectType = resolveEmulatorProjectType(
     normalizedWidgetType,
@@ -235,17 +237,23 @@ export function EmulatorPanel({
     canvas: HTMLCanvasElement | null,
     frameMeta: { width: number; height: number } | null = null,
     scaleMultiplier = 1,
-  ) {
-    if (!canvas) return;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-    ctx.imageSmoothingEnabled = false;
-    paintCanvasBlackBase(ctx, canvas.width, canvas.height);
-    if (backgroundRef.current) {
-      ctx.drawImage(backgroundRef.current, 0, 0, canvas.width, canvas.height);
-      return;
+  ): boolean {
+    if (!canvas) return false;
+    try {
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return false;
+      ctx.imageSmoothingEnabled = false;
+      paintCanvasBlackBase(ctx, canvas.width, canvas.height);
+      if (backgroundRef.current) {
+        ctx.drawImage(backgroundRef.current, 0, 0, canvas.width, canvas.height);
+        return true;
+      }
+      fillEmulatorScreenBlack(ctx, frameMeta, scaleMultiplier);
+      return true;
+    } catch {
+      setFrameRenderError(true);
+      return false;
     }
-    fillEmulatorScreenBlack(ctx, frameMeta, scaleMultiplier);
   }
 
   /** Clear last frame and pending work so the preview does not show a stale capture after stop. */
@@ -256,6 +264,7 @@ export function EmulatorPanel({
     pendingFrameRef.current = null;
     latestFrameMetaRef.current = null;
     setFrameSize(null);
+    setFrameRenderError(false);
     workerBusyRef.current = false;
     setDartCoords(Array.from({ length: 12 }, () => null));
     drawBackgroundOnly(canvasRef.current, meta, 1);
@@ -311,29 +320,34 @@ export function EmulatorPanel({
     bitmap: ImageBitmap,
     frame: { width: number; height: number },
     scaleMultiplier = 1,
-  ) {
-    if (!canvas) return;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-    ctx.imageSmoothingEnabled = false;
-    paintCanvasBlackBase(ctx, canvas.width, canvas.height);
-    const sx = scaleMultiplier;
-    if (frame.width === 128 && frame.height === 160) {
-      ctx.drawImage(bitmap, 0, 0, 128, 128, 38 * sx, 38 * sx, 512 * sx, 512 * sx);
-      ctx.drawImage(bitmap, 0, 128, 64, 32, 123 * sx, 601 * sx, 342 * sx, 176 * sx);
-    } else if (frame.width === 64 && frame.height === 32) {
-      ctx.drawImage(bitmap, 0, 0, 64, 32, 123 * sx, 601 * sx, 342 * sx, 176 * sx);
-    } else if (frame.width === 128 && frame.height === 128) {
-      ctx.drawImage(bitmap, 0, 0, 128, 128, 38 * sx, 38 * sx, 512 * sx, 512 * sx);
-    } else {
-      ctx.drawImage(bitmap, 0, 0, frame.width, frame.height, 38 * sx, 38 * sx, 512 * sx, 512 * sx);
-    }
-    const overlay = getGridOverlay(frame.width, frame.height, scaleMultiplier);
-    if (overlay) {
-      ctx.drawImage(overlay, 0, 0, canvas.width, canvas.height);
-    }
-    if (backgroundRef.current) {
-      ctx.drawImage(backgroundRef.current, 0, 0, canvas.width, canvas.height);
+  ): boolean {
+    if (!canvas) return false;
+    try {
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return false;
+      ctx.imageSmoothingEnabled = false;
+      paintCanvasBlackBase(ctx, canvas.width, canvas.height);
+      const sx = scaleMultiplier;
+      if (frame.width === 128 && frame.height === 160) {
+        ctx.drawImage(bitmap, 0, 0, 128, 128, 38 * sx, 38 * sx, 512 * sx, 512 * sx);
+        ctx.drawImage(bitmap, 0, 128, 64, 32, 123 * sx, 601 * sx, 342 * sx, 176 * sx);
+      } else if (frame.width === 64 && frame.height === 32) {
+        ctx.drawImage(bitmap, 0, 0, 64, 32, 123 * sx, 601 * sx, 342 * sx, 176 * sx);
+      } else if (frame.width === 128 && frame.height === 128) {
+        ctx.drawImage(bitmap, 0, 0, 128, 128, 38 * sx, 38 * sx, 512 * sx, 512 * sx);
+      } else {
+        ctx.drawImage(bitmap, 0, 0, frame.width, frame.height, 38 * sx, 38 * sx, 512 * sx, 512 * sx);
+      }
+      const overlay = getGridOverlay(frame.width, frame.height, scaleMultiplier);
+      if (overlay) {
+        ctx.drawImage(overlay, 0, 0, canvas.width, canvas.height);
+      }
+      if (backgroundRef.current) {
+        ctx.drawImage(backgroundRef.current, 0, 0, canvas.width, canvas.height);
+      }
+      return true;
+    } catch {
+      return false;
     }
   }
 
@@ -364,24 +378,94 @@ export function EmulatorPanel({
     pendingFrameRef.current = null;
     postFrameJob(pending);
   }
+  function retryFrameRenderer() {
+    frameRenderGenerationRef.current = nextFrameRenderGeneration(frameRenderGenerationRef.current);
+    activeWorkerSequenceRef.current = null;
+    pendingFrameRef.current = null;
+    latestFrameMetaRef.current = null;
+    workerBusyRef.current = false;
+    gridOverlayCacheRef.current.clear();
+    setFrameSize(null);
+    setFrameRenderError(false);
+    restartFrameWorkerRef.current?.();
+    drawBackgroundOnly(canvasRef.current, null, 1);
+    drawBackgroundOnly(zoomCanvasRef.current, null, 2);
+  }
 
   useEffect(() => {
-    frameWorkerRef.current = new Worker(new URL("./frameWorker.ts", import.meta.url), { type: "module" });
-    frameWorkerRef.current.onmessage = (event: MessageEvent) => {
+    let disposed = false;
+
+    function closeBitmap(bitmap?: ImageBitmap): void {
+      try {
+        bitmap?.close();
+      } catch {
+        // A WebKit bitmap may already be detached after the view resumes.
+      }
+    }
+
+    function createFrameWorker(): void {
+      try {
+        const worker = new Worker(new URL("./frameWorker.ts", import.meta.url), { type: "module" });
+        worker.onmessage = handleWorkerMessage;
+        frameWorkerRef.current = worker;
+      } catch {
+        frameWorkerRef.current = null;
+        setFrameRenderError(true);
+      }
+    }
+
+    function restartFrameWorker(): void {
+      frameWorkerRef.current?.terminate();
+      frameWorkerRef.current = null;
+      activeWorkerSequenceRef.current = null;
+      workerBusyRef.current = false;
+      if (!disposed) {
+        createFrameWorker();
+      }
+    }
+
+    function handleFrameRenderFailure(): void {
+      if (disposed) return;
+      setFrameRenderError(true);
+      gridOverlayCacheRef.current.clear();
+      drawBackgroundOnly(canvasRef.current, latestFrameMetaRef.current, 1);
+      if (zoomOpenRef.current) {
+        drawBackgroundOnly(zoomCanvasRef.current, latestFrameMetaRef.current, 2);
+      }
+      restartFrameWorker();
+      postPendingFrameJob();
+    }
+
+    function handleWorkerMessage(event: MessageEvent): void {
       const data = event.data as WorkerFrameResult;
-      if (typeof data.sequence !== "number" || data.sequence !== activeWorkerSequenceRef.current) {
-        data.bitmap?.close();
+      if (disposed) {
+        closeBitmap(data?.bitmap);
+        return;
+      }
+      if (!data || typeof data.sequence !== "number" || data.sequence !== activeWorkerSequenceRef.current) {
+        closeBitmap(data?.bitmap);
         return;
       }
       activeWorkerSequenceRef.current = null;
-      if (data && typeof data === "object" && data.kind === "workerNack") {
+      if (data.kind === "workerNack") {
         workerBusyRef.current = false;
         postPendingFrameJob();
         return;
       }
+      if (
+        !data.bitmap ||
+        typeof data.width !== "number" ||
+        typeof data.height !== "number" ||
+        typeof data.generation !== "number"
+      ) {
+        closeBitmap(data.bitmap);
+        workerBusyRef.current = false;
+        handleFrameRenderFailure();
+        return;
+      }
       const payload = data as Required<Pick<WorkerFrameResult, "bitmap" | "width" | "height" | "generation">>;
       if (!shouldRenderFrameGeneration(payload.generation, frameRenderGenerationRef.current)) {
-        payload.bitmap.close();
+        closeBitmap(payload.bitmap);
         workerBusyRef.current = false;
         postPendingFrameJob();
         return;
@@ -392,39 +476,52 @@ export function EmulatorPanel({
           ? current
           : { width: payload.width, height: payload.height }
       );
-      drawFrameToCanvas(canvasRef.current, payload.bitmap, { width: payload.width, height: payload.height }, 1);
-      if (zoomOpenRef.current) {
-        drawFrameToCanvas(
+      let rendered = drawFrameToCanvas(canvasRef.current, payload.bitmap, { width: payload.width, height: payload.height }, 1);
+      if (rendered && zoomOpenRef.current) {
+        rendered = drawFrameToCanvas(
           zoomCanvasRef.current,
           payload.bitmap,
           { width: payload.width, height: payload.height },
           2,
         );
       }
-      payload.bitmap.close();
+      closeBitmap(payload.bitmap);
+      if (!rendered) {
+        workerBusyRef.current = false;
+        handleFrameRenderFailure();
+        return;
+      }
+      setFrameRenderError(false);
       const now = performance.now();
       renderTimesRef.current.push(now);
       updateNormalizedFps(now);
       workerBusyRef.current = false;
       postPendingFrameJob();
-    };
+    }
+
+    restartFrameWorkerRef.current = restartFrameWorker;
+    createFrameWorker();
 
     void (async () => {
-      const bg = await tauriClient.getEmulatorBackground();
-      if (bg?.url) {
-        const img = new Image();
-        img.src = bg.url;
-        img.onerror = () => {};
-        img.onload = () => {
-          backgroundRef.current = img;
-          const meta = latestFrameMetaRef.current;
-          drawBackgroundOnly(canvasRef.current, meta, 1);
-          if (zoomOpenRef.current) {
-            drawBackgroundOnly(zoomCanvasRef.current, meta, 2);
-          }
-        };
-      } else {
-        drawBackgroundOnly(canvasRef.current, latestFrameMetaRef.current, 1);
+      try {
+        const bg = await tauriClient.getEmulatorBackground();
+        if (bg?.url) {
+          const img = new Image();
+          img.src = bg.url;
+          img.onerror = () => {};
+          img.onload = () => {
+            backgroundRef.current = img;
+            const meta = latestFrameMetaRef.current;
+            drawBackgroundOnly(canvasRef.current, meta, 1);
+            if (zoomOpenRef.current) {
+              drawBackgroundOnly(zoomCanvasRef.current, meta, 2);
+            }
+          };
+        } else {
+          drawBackgroundOnly(canvasRef.current, latestFrameMetaRef.current, 1);
+        }
+      } catch {
+        setFrameRenderError(true);
       }
     })();
 
@@ -528,6 +625,8 @@ export function EmulatorPanel({
     });
 
     return () => {
+      disposed = true;
+      restartFrameWorkerRef.current = null;
       stopState();
       stopFrame();
       stopDeployFrame?.();
@@ -553,23 +652,27 @@ export function EmulatorPanel({
 
   useEffect(() => {
     if (!zoomOpen) return;
-    const latest = latestFrameMetaRef.current;
-    if (latest) {
-      const canvas = zoomCanvasRef.current;
-      if (canvas && canvasRef.current) {
-        const ctx = canvas.getContext("2d");
-        if (ctx) {
-          ctx.imageSmoothingEnabled = false;
-          ctx.clearRect(0, 0, canvas.width, canvas.height);
-          ctx.drawImage(canvasRef.current, 0, 0, canvas.width, canvas.height);
-          const overlay = getGridOverlay(latest.width, latest.height, 2);
-          if (overlay) {
-            ctx.drawImage(overlay, 0, 0, canvas.width, canvas.height);
+    try {
+      const latest = latestFrameMetaRef.current;
+      if (latest) {
+        const canvas = zoomCanvasRef.current;
+        if (canvas && canvasRef.current) {
+          const ctx = canvas.getContext("2d");
+          if (ctx) {
+            ctx.imageSmoothingEnabled = false;
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(canvasRef.current, 0, 0, canvas.width, canvas.height);
+            const overlay = getGridOverlay(latest.width, latest.height, 2);
+            if (overlay) {
+              ctx.drawImage(overlay, 0, 0, canvas.width, canvas.height);
+            }
           }
         }
+      } else {
+        drawBackgroundOnly(zoomCanvasRef.current, null, 2);
       }
-    } else {
-      drawBackgroundOnly(zoomCanvasRef.current, null, 2);
+    } catch {
+      setFrameRenderError(true);
     }
   }, [zoomOpen]);
 
@@ -716,6 +819,21 @@ export function EmulatorPanel({
               onClick={() => void applyWidgetPathAndReload(workspacePath)}
             >
               Reload current workspace
+            </button>
+          </div>
+        ) : null}
+        {frameRenderError ? (
+          <div
+            className="absolute inset-x-3 top-14 z-30 mx-auto flex max-w-[440px] items-center gap-3 rounded-lg border border-[rgba(245,158,11,0.42)] bg-[rgba(245,158,11,0.10)] px-3 py-2 text-[var(--color-warning-text)] shadow-lg backdrop-blur-sm"
+            role="alert"
+          >
+            <span className="min-w-0 flex-1 text-xs">Preview paused after wake. Retrying frames…</span>
+            <button
+              type="button"
+              className="shrink-0 rounded-md border border-[rgba(245,158,11,0.5)] bg-[rgba(245,158,11,0.14)] px-2 py-1 text-[11px] font-medium text-[var(--color-warning-text)] transition-colors hover:bg-[rgba(245,158,11,0.24)]"
+              onClick={retryFrameRenderer}
+            >
+              Retry preview
             </button>
           </div>
         ) : null}
