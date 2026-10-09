@@ -239,7 +239,8 @@ export function loadReleaseConfig(repoRoot, processEnv = process.env) {
     apiBase: value("DARTSNUT_RELEASE_API_BASE").replace(/\/+$/, ""),
     account: value("DARTSNUT_RELEASE_ACCOUNT"),
     password: value("DARTSNUT_RELEASE_PASSWORD"),
-    description: value("DARTSNUT_RELEASE_DESCRIPTION")
+    description: value("DARTSNUT_RELEASE_DESCRIPTION"),
+    isCurrent: value("DARTSNUT_RELEASE_IS_CURRENT").toLowerCase() === "true"
   };
   const missing = [
     ["DARTSNUT_RELEASE_API_BASE", config.apiBase],

@@ -318,6 +318,40 @@ test("publishBuiltArtifacts stops before release save and metadata when signatur
   }
 });
 
+test("publishBuiltArtifacts respects isCurrent: true", async () => {
+  const root = tempDir();
+  const calls = [];
+  try {
+    writeArtifact(root, "app.dmg");
+    writeArtifact(root, "app.app.tar.gz");
+    writeArtifact(root, "app.app.tar.gz.sig", "signed-value");
+    const api = {
+      async login() {},
+      async uploadInstaller() { return { url: "https://files.example/app.dmg", md5: "abc123" }; },
+      async findRelease() { return null; },
+      async saveRelease(_row, data) { calls.push(["save", data]); },
+      async uploadLiveUpdate(_file, uploadName) {
+        return { url: `https://updates.example.com/${uploadName}` };
+      }
+    };
+    await helpers.publishBuiltArtifacts({
+      api,
+      target: helpers.releaseTargetForPlatform("darwin"),
+      version: "1.5.4",
+      isCurrent: true,
+      artifacts: {
+        installer: path.join(root, "app.dmg"),
+        updaterPayload: path.join(root, "app.app.tar.gz"),
+        signature: path.join(root, "app.app.tar.gz.sig")
+      }
+    });
+    const saveCall = calls.find((call) => call[0] === "save");
+    assert.equal(saveCall[1].is_current, true);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("loadReleaseConfig reads .env and validates required values", () => {
   const root = tempDir();
   const emptyRoot = tempDir();
@@ -326,13 +360,15 @@ test("loadReleaseConfig reads .env and validates required values", () => {
       "DARTSNUT_RELEASE_API_BASE=https://api.example.com/",
       "DARTSNUT_RELEASE_ACCOUNT=release-admin",
       "DARTSNUT_RELEASE_PASSWORD='secret value'",
-      "DARTSNUT_RELEASE_DESCRIPTION=Notes"
+      "DARTSNUT_RELEASE_DESCRIPTION=Notes",
+      "DARTSNUT_RELEASE_IS_CURRENT=true"
     ].join("\n"));
     assert.deepEqual(helpers.loadReleaseConfig(root, {}), {
       apiBase: "https://api.example.com",
       account: "release-admin",
       password: "secret value",
-      description: "Notes"
+      description: "Notes",
+      isCurrent: true
     });
     assert.throws(
       () => helpers.loadReleaseConfig(emptyRoot, {}),
