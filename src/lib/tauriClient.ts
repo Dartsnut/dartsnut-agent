@@ -224,6 +224,7 @@ export function createTauriClient() {
     communityUpdateWorkspaceVersion: (request: CommunityUpdateWorkspaceVersionRequest) => invoke<CommunityUpdateWorkspaceVersionResponse>("community_update_workspace_version", request),
     onCommunitySubmitProgress: (listener: Listener<CommunitySubmitProgress>) => subscribe("community:submit-progress", listener),
     communityWithdrawAppVersion: (request: CommunityWithdrawAppVersionRequest) => invoke<CommunityWithdrawAppVersionResponse>("community_withdraw_app_version", request),
+    pickImages: (request: { multiple?: boolean }) => invoke<{ ok: true; files: Array<{ path: string; name: string; dataUrl: string }> } | { ok: false; cancelled: true }>("pick_images", request),
     getPathForFile: (file: File) => {
       const nativePath = (file as File & { path?: string }).path;
       if (nativePath) return nativePath;
