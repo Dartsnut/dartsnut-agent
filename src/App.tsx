@@ -96,6 +96,7 @@ import { shouldSetInitialChatTitle } from "./chatTitlePolicy";
 import { tauriClient } from "./lib/tauriClient";
 import { normalizeWidgetConfigSnapshot } from "./widgetParams";
 import { readyAgentProfileId, useChatPersonaController } from "./useChatPersonaController";
+import { useAutoDismiss } from "./useAutoDismiss";
 import { AskQuestionCard } from "./AskQuestionCard";
 import { cn } from "./cn";
 import { devLog, isDevLoggingEnabled } from "./devOnlyLog";
@@ -1083,20 +1084,34 @@ export function App() {
   const [analyticsEnabled, setAnalyticsEnabled] = useState(() => getAnalyticsCollectionEnabled());
   const [providerSettingsError, setProviderSettingsError] = useState<string | null>(null);
   const [providerSettingsNotice, setProviderSettingsNotice] = useState<string | null>(null);
+  const [workspaceSnack, setWorkspaceSnack] = useState<string | null>(null);
   const [savingProviderSettings, setSavingProviderSettings] = useState(false);
   const [deployPaneTab, setDeployPaneTab] = useState<DeployPaneTab>("deploy");
   const [deployDrawerOpen, setDeployDrawerOpen] = useState(false);
-  const [deployEligibility, setDeployEligibility] = useState<DeployEligibility>({
-    ok: false,
-    reason: "no_workspace"
-  });
-  const deployEligible = deployEligibility.ok;
+  // `null` means "not classified yet" — distinct from an ineligible workspace,
+  // so the emulator panel does not flash a fault label while the first
+  // classification is in flight.
+  const [deployEligibility, setDeployEligibility] = useState<DeployEligibility | null>(null);
+  const deployEligible = deployEligibility?.ok === true;
+  // `workspace_not_selected` means no workspace at all, so the panel is absent
+  // and there is nothing to label — it is not a fault state.
+  const workspaceFaultReason =
+    deployEligibility && !deployEligibility.ok && deployEligibility.reason !== "workspace_not_selected"
+      ? deployEligibility.reason
+      : null;
+  const workspaceFaultProblems =
+    deployEligibility && !deployEligibility.ok
+      ? (deployEligibility.problems ?? [deployEligibility.reason]).filter(
+          (problem): problem is Exclude<typeof problem, "workspace_not_selected"> =>
+            problem !== "workspace_not_selected"
+        )
+      : [];
   const activeProject = projectTree.projects.find((project) => project.id === bootstrap?.activeProjectId) ?? null;
   const activeChat = projectTree.chats.find((chat) => chat.id === bootstrap?.activeChatId) ?? null;
   const validProject = Boolean(
     activeProject &&
     bootstrap?.workspaceRoot &&
-    deployEligibility.ok &&
+    deployEligibility?.ok &&
     (deployEligibility.projectType === "game" || deployEligibility.projectType === "widget")
   );
   const chatDisabled = useMemo(() => {
@@ -1162,10 +1177,15 @@ export function App() {
       try { void Promise.resolve(stop?.()).catch(() => undefined); } catch { /* already removed */ }
     };
   }, [chatDisabled]);
-  const showEmulator = validProject;
+  // The emulator panel follows *workspace selection*, not validity: a faulted
+  // workspace still gets the panel plus a sticky fault label, so "why is the
+  // emulator missing" never becomes ambiguous. The deploy drawer keeps the
+  // stricter gate and its toggle explains the block instead of hiding.
+  const hasSelectedWorkspace = Boolean(bootstrap?.workspaceRoot);
   const showRuntimeSetup = pythonRuntimeProgress.running || Boolean(pythonRuntimeProgress.error);
-  const showEmulatorPane = screen === "main" && showEmulator && !showRuntimeSetup;
+  const showEmulatorPane = screen === "main" && hasSelectedWorkspace && !showRuntimeSetup;
   const showDeployDrawer = screen === "main" && validProject && !showRuntimeSetup;
+  const showDeployToggle = screen === "main" && hasSelectedWorkspace && !showRuntimeSetup;
   const [widgetConfigs, setWidgetConfigs] = useState<Record<WidgetConfigScope, WidgetConfigSnapshot>>(EMPTY_WIDGET_CONFIGS);
   const [widgetValuesByConfig, setWidgetValuesByConfig] = useState<Record<string, WidgetValueState>>({});
   const [theme, setTheme] = useState<ThemeId>(() => resolveThemeFromEnvironment());
@@ -1604,17 +1624,9 @@ export function App() {
     }
   }, [communitySessionVersion, providerSettings.activeProvider, refreshLlmQuota, screen]);
 
-  useEffect(() => {
-    if (!providerSettingsNotice) return;
-    const timeout = window.setTimeout(() => setProviderSettingsNotice(null), 4_000);
-    return () => window.clearTimeout(timeout);
-  }, [providerSettingsNotice]);
-
-  useEffect(() => {
-    if (!providerSettingsError) return;
-    const timeout = window.setTimeout(() => setProviderSettingsError(null), 7_000);
-    return () => window.clearTimeout(timeout);
-  }, [providerSettingsError]);
+  useAutoDismiss(providerSettingsNotice, 4_000, setProviderSettingsNotice);
+  useAutoDismiss(providerSettingsError, 7_000, setProviderSettingsError);
+  useAutoDismiss(workspaceSnack, 6_000, setWorkspaceSnack);
 
   useEffect(() => {
     if (communitySession.loggedIn) {
@@ -2301,7 +2313,9 @@ export function App() {
 
   useEffect(() => {
     if (!bootstrap?.workspaceRoot) {
-      setDeployEligibility({ ok: false, reason: "no_workspace" });
+      // No workspace → no classification. Not a fault; the panel is simply not
+      // shown, so there is nothing to explain.
+      setDeployEligibility(null);
       return;
     }
     let cancelled = false;
@@ -2320,6 +2334,17 @@ export function App() {
       unsubscribe();
     };
   }, [api, bootstrap?.workspaceRoot]);
+
+  /**
+   * Re-runs the workspace classification. Resolves to the fresh fault reason,
+   * or `null` when the workspace is healthy — the emulator panel uses that to
+   * decide whether it is safe to poke the runtime.
+   */
+  const retryWorkspaceClassification = useCallback(async (): Promise<string | null> => {
+    const result = await api.deployGetEligibility();
+    setDeployEligibility(result);
+    return result.ok ? null : result.reason;
+  }, [api]);
 
   const acceptWidgetConfig = useCallback((snapshot: WidgetConfigSnapshot) => {
     const normalizedSnapshot = normalizeWidgetConfigSnapshot(snapshot);
@@ -2364,11 +2389,11 @@ export function App() {
     });
   }, []);
 
-  const deployPanelShowsWidgetParams = deployEligible && deployEligibility.projectType === "widget";
+  const deployPanelShowsWidgetParams = deployEligible && deployEligibility?.projectType === "widget";
   const communityWorkspaceRefreshKey = [
     bootstrap?.workspaceRoot ?? "",
-    deployEligibility.ok ? deployEligibility.appId : "",
-    deployEligibility.ok ? deployEligibility.projectType : deployEligibility.reason
+    deployEligibility?.ok ? deployEligibility.appId : "",
+    deployEligibility?.ok ? deployEligibility.projectType : (deployEligibility?.reason ?? "")
   ].join("|");
   const communityAuthSkipped = communityAuthSkippedVersion >= 0 && isCommunityAuthSkippedForSession();
   const gamesTabDisabled = !communitySession.loggedIn && communityAuthSkipped;
@@ -3268,16 +3293,37 @@ export function App() {
           <div className="main-workspace-panel__drag-region" data-tauri-drag-region aria-hidden />
           <div className="main-workspace-panel__controls">
             <UpdateDownloadPill status={appUpdate} />
-            {screen === "main" && showDeployDrawer ? (
+            {showDeployToggle ? (
               <button
                 type="button"
-                className="header-deploy-toggle"
-                aria-label={deployDrawerOpen ? "Collapse Deploy and Community panel" : "Open Deploy and Community panel"}
-                aria-expanded={deployDrawerOpen}
-                title={deployDrawerOpen ? "Collapse right panel" : "Open right panel"}
-                onClick={() => setDeployDrawerOpen((open) => !open)}
+                className={cn("header-deploy-toggle", !showDeployDrawer && "header-deploy-toggle--blocked")}
+                aria-label={
+                  showDeployDrawer
+                    ? deployDrawerOpen
+                      ? "Collapse Deploy and Community panel"
+                      : "Open Deploy and Community panel"
+                    : "Deploy and Community panel unavailable until the workspace is fixed"
+                }
+                aria-expanded={showDeployDrawer ? deployDrawerOpen : false}
+                aria-disabled={!showDeployDrawer}
+                title={
+                  showDeployDrawer
+                    ? deployDrawerOpen
+                      ? "Collapse right panel"
+                      : "Open right panel"
+                    : "Fix the workspace first"
+                }
+                onClick={() => {
+                  if (!showDeployDrawer) {
+                    setWorkspaceSnack("Deploy needs a healthy workspace. Fix the workspace first.");
+                    return;
+                  }
+                  setDeployDrawerOpen((open) => !open);
+                }}
               >
-                {deployDrawerOpen ? <PanelRightClose size={18} aria-hidden /> : <PanelRightOpen size={18} aria-hidden />}
+                {deployDrawerOpen && showDeployDrawer
+                  ? <PanelRightClose size={18} aria-hidden />
+                  : <PanelRightOpen size={18} aria-hidden />}
               </button>
             ) : null}
           </div>
@@ -3783,7 +3829,11 @@ export function App() {
             <div className="flex min-h-0 flex-1 flex-col">
               <EmulatorPanel
                 workspacePath={bootstrap?.workspaceRoot ?? ""}
-                workspaceProjectType={deployEligibility.ok ? deployEligibility.projectType : null}
+                workspaceProjectType={deployEligibility?.ok ? deployEligibility.projectType : null}
+                workspaceFaultReason={workspaceFaultReason}
+                workspaceFaultProblems={workspaceFaultProblems}
+                onRetryWorkspace={retryWorkspaceClassification}
+                onChangeWorkspaceFolder={() => void handlePickWorkspace()}
                 widgetConfig={widgetConfigs.emulator}
                 widgetValuesByConfig={widgetValuesByConfig}
                 onWidgetValuesChange={updateWidgetValues}
@@ -3870,10 +3920,11 @@ export function App() {
         </div>
       ) : null}
       </section>
-      {providerSettingsError || providerSettingsNotice ? (
+      {providerSettingsError || providerSettingsNotice || workspaceSnack ? (
         <div className="global-toast-stack" aria-live="polite">
           {providerSettingsError ? <div className="global-toast global-toast--error" role="alert">{providerSettingsError}</div> : null}
           {providerSettingsNotice ? <div className="global-toast global-toast--success" role="status">{providerSettingsNotice}</div> : null}
+          {workspaceSnack ? <div className="global-toast global-toast--error" role="alert">{workspaceSnack}</div> : null}
         </div>
       ) : null}
       {projectSwitchProgress.active ? <div className="project-switch-overlay" role="status" aria-live="polite"><div><h2>Switching project</h2><p>{projectSwitchProgress.message ?? "Preparing…"}</p></div></div> : null}

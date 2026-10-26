@@ -1,4 +1,5 @@
 import type { ProjectType, WidgetConfigSnapshot } from "@dartsnut/desktop-contracts";
+import type { WorkspaceFaultReason } from "./workspaceFaultCopy";
 
 export function shouldShowWidgetParams(
   projectType: string | null | undefined,
@@ -67,6 +68,22 @@ export function resolveEmulatorProjectType(
   return null;
 }
 
-export function canStartOrReloadEmulator(workspacePath: string | null | undefined): boolean {
+export function canStartOrReloadEmulator(
+  workspacePath: string | null | undefined,
+  options: { workspaceFaulted?: boolean } = {},
+): boolean {
+  if (options.workspaceFaulted) return false;
   return Boolean(workspacePath?.trim());
+}
+
+/**
+ * A running emulator pinned to a different, valid workspace is the more
+ * specific truth: the user is looking at a stale panel, not a broken project.
+ * The workspace fault label yields to it.
+ */
+export function shouldShowWorkspaceFaultLabel(
+  faultReason: WorkspaceFaultReason | null | undefined,
+  runningProcessWorkspaceMismatch: boolean,
+): boolean {
+  return Boolean(faultReason) && !runningProcessWorkspaceMismatch;
 }

@@ -332,10 +332,34 @@ export type AgentEvent =
     visible: boolean;
   } & AgentQuestionPrompt);
 
+/**
+ * Every reason `classify_dartsnut_project_files` / `workspace_runnable` can
+ * emit (src-tauri/src/commands.rs). The renderer keys fault copy off these.
+ */
+export type DeployEligibilityReason =
+  | "workspace_not_selected"
+  | "missing_pyproject"
+  | "pyproject_unparseable"
+  | "pyproject_no_project_table"
+  | "pyproject_bad_dependencies"
+  | "missing_project_name"
+  | "missing_project_version"
+  | "missing_pydartsnut"
+  | "conf_unparseable"
+  | "conf_not_object"
+  | "conf_missing_widget_keys"
+  | "missing_main_py";
+
 /** Result of classifying the workspace project files for deploy-to-machine eligibility. */
 export type DeployEligibility =
   | { ok: true; appId: string; version: string; projectType: ProjectType }
-  | { ok: false; reason: string };
+  | {
+      ok: false;
+      /** First problem found — kept for consumers that understand one code. */
+      reason: DeployEligibilityReason;
+      /** Every problem found, so the UI can itemise rather than guess. */
+      problems?: DeployEligibilityReason[];
+    };
 
 export interface DeployConnectRequest {
   host: string;

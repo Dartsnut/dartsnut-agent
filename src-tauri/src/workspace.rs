@@ -58,20 +58,26 @@ impl WorkspaceRoot {
     }
 }
 
-/// Identity of the files that decide emulator/deploy eligibility.
-/// `None` hashes mean the file is missing or unreadable.
+/// Identity of the files that decide emulator/deploy eligibility and
+/// runnability. `None` hashes mean the file is missing or unreadable;
+/// `root_present` flips when the workspace directory itself disappears or
+/// returns, which no file hash can observe.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorkspaceManifestSig {
     pub root: Option<PathBuf>,
+    pub root_present: bool,
     pub pyproject: Option<u64>,
     pub conf: Option<u64>,
+    pub main: Option<u64>,
 }
 
 pub fn manifest_sig(root: Option<&Path>) -> WorkspaceManifestSig {
     WorkspaceManifestSig {
         root: root.map(Path::to_path_buf),
+        root_present: root.is_some_and(Path::is_dir),
         pyproject: root.and_then(|path| content_sig(&path.join("pyproject.toml"))),
         conf: root.and_then(|path| content_sig(&path.join("conf.json"))),
+        main: root.and_then(|path| content_sig(&path.join("main.py"))),
     }
 }
 
@@ -134,6 +140,32 @@ mod tests {
         assert_eq!(rewritten.pyproject, with_conf.pyproject);
         assert_ne!(rewritten, with_conf);
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn manifest_sig_tracks_main_py_so_runnability_changes_republish() {
+        let root = tempfile_dir();
+        fs::write(root.join("pyproject.toml"), "[project]\nname = \"demo\"\n").unwrap();
+        let without_main = manifest_sig(Some(&root));
+        assert!(without_main.main.is_none());
+
+        fs::write(root.join("main.py"), "print('ok')\n").unwrap();
+        let with_main = manifest_sig(Some(&root));
+        assert!(with_main.main.is_some());
+        assert_ne!(without_main, with_main);
+
+        fs::write(root.join("main.py"), "print('changed')\n").unwrap();
+        let rewritten = manifest_sig(Some(&root));
+        assert_ne!(with_main.main, rewritten.main);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn manifest_sig_reports_workspace_root_presence() {
+        let root = tempfile_dir();
+        assert!(manifest_sig(Some(&root)).root_present);
+        let _ = fs::remove_dir_all(&root);
+        assert!(!manifest_sig(Some(&root)).root_present);
     }
 
     fn tempfile_dir() -> PathBuf {

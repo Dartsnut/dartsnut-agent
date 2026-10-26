@@ -292,6 +292,20 @@ body {
   outline: none;
 }
 
+/* Rendered but inert: the deploy drawer needs a healthy workspace, and a
+   vanished toggle would read as a bug rather than as a blocked action. */
+.header-deploy-toggle--blocked {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.header-deploy-toggle--blocked:hover,
+.header-deploy-toggle--blocked:focus-visible {
+  border-color: transparent;
+  background: transparent;
+  color: var(--color-text-primary);
+}
+
 .deploy-drawer-viewport {
   position: absolute;
   z-index: 32;
