@@ -97,6 +97,7 @@ import { tauriClient } from "./lib/tauriClient";
 import { normalizeWidgetConfigSnapshot } from "./widgetParams";
 import { readyAgentProfileId, useChatPersonaController } from "./useChatPersonaController";
 import { useAutoDismiss } from "./useAutoDismiss";
+import { workspaceFixPrompt } from "./workspaceFaultCopy";
 import { AskQuestionCard } from "./AskQuestionCard";
 import { cn } from "./cn";
 import { devLog, isDevLoggingEnabled } from "./devOnlyLog";
@@ -1079,6 +1080,8 @@ export function App() {
   const promptInputRef = useRef<HTMLTextAreaElement | null>(null);
   const personaController = useChatPersonaController();
   const personaState = personaController.state;
+  /** `personaState` narrowed to the ready variant, where chatId/profileId exist. */
+  const readyPersona = personaState.phase === "ready" ? personaState : null;
   const [composerExpandedSticky, setComposerExpandedSticky] = useState(false);
   const [providerSettings, setProviderSettings] = useState<ProviderSettings>(DEFAULT_PROVIDER_SETTINGS);
   const [analyticsEnabled, setAnalyticsEnabled] = useState(() => getAnalyticsCollectionEnabled());
@@ -2346,6 +2349,45 @@ export function App() {
     return result.ok ? null : result.reason;
   }, [api]);
 
+  /**
+   * Hands a workspace fault to the agent as an ordinary user message, so the
+   * repair runs in the current chat: visible in the transcript and stoppable
+   * like any other prompt. Same guards as the composer — if a prompt could not
+   * be typed right now, this must not fire either.
+   */
+  const requestAgentWorkspaceRepair = useCallback(
+    async (problems: readonly string[]) => {
+      if (chatDisabled) {
+        return;
+      }
+      if (!readyPersona || readyPersona.chatId !== bootstrap?.activeChatId) {
+        return;
+      }
+      if (bootstrap?.providerStatus !== "ready") {
+        postStatus("Provider settings are incomplete. Open Settings and save API key + model, then send again.");
+        return;
+      }
+      const promptText = workspaceFixPrompt(problems);
+      setEntries((prev) => [...prev, { id: `user-${Date.now()}`, role: "user", text: promptText }]);
+      await submitPrompt(
+        sessionPromptRequest(promptText, { agentProfileId: readyPersona.profileId }),
+        promptText
+      );
+    },
+    [
+      bootstrap?.activeChatId,
+      bootstrap?.activeProjectId,
+      bootstrap?.providerStatus,
+      bootstrap?.workspaceRoot,
+      chatDisabled,
+      postStatus,
+      readyPersona,
+      sessionProjectType,
+      sessionTemplateMode,
+      sessionWidgetSize
+    ]
+  );
+
   const acceptWidgetConfig = useCallback((snapshot: WidgetConfigSnapshot) => {
     const normalizedSnapshot = normalizeWidgetConfigSnapshot(snapshot);
     setWidgetConfigs((previous) => ({ ...previous, [normalizedSnapshot.scope]: normalizedSnapshot }));
@@ -2597,6 +2639,24 @@ export function App() {
       ...(failureReason ? { failure_reason: failureReason } : {})
     });
     activeAgentRunRef.current = null;
+  }
+
+  /** The session fields every prompt carries — composer sends and agent repair sends alike. */
+  function sessionPromptRequest(
+    promptText: string,
+    options: { chatMediaAttachments?: ChatMediaAttachment[]; agentProfileId: AgentProfileId }
+  ): PromptRequest {
+    return {
+      prompt: promptText,
+      chatMediaAttachments: options.chatMediaAttachments,
+      workspacePath: bootstrap?.workspaceRoot ?? undefined,
+      projectId: bootstrap?.activeProjectId ?? undefined,
+      chatId: bootstrap?.activeChatId ?? undefined,
+      templateMode: sessionTemplateMode ?? undefined,
+      widgetSize: sessionWidgetSize ?? undefined,
+      projectType: sessionProjectType ?? undefined,
+      agentProfileId: options.agentProfileId
+    };
   }
 
   async function submitPrompt(request: PromptRequest, firstUserMessageForTitle?: string) {
@@ -3064,17 +3124,10 @@ export function App() {
     setChatMediaAttachments([]);
     setEntries((prev) => [...prev, { id: `user-${Date.now()}`, role: "user", text: visibleUserText }]);
 
-    await submitPrompt({
-      prompt: visiblePrompt,
-      chatMediaAttachments: attachments,
-      workspacePath: bootstrap?.workspaceRoot ?? undefined,
-      projectId: bootstrap?.activeProjectId ?? undefined,
-      chatId: bootstrap?.activeChatId ?? undefined,
-      templateMode: sessionTemplateMode ?? undefined,
-      widgetSize: sessionWidgetSize ?? undefined,
-      projectType: sessionProjectType ?? undefined,
-      agentProfileId: personaState.profileId
-    }, visibleUserText);
+    await submitPrompt(
+      sessionPromptRequest(visiblePrompt, { chatMediaAttachments: attachments, agentProfileId: personaState.profileId }),
+      visibleUserText
+    );
   }
 
   async function handleStopAgent() {
@@ -3824,6 +3877,7 @@ export function App() {
                 workspaceProjectType={deployEligibility?.ok ? deployEligibility.projectType : null}
                 workspaceFaultReason={workspaceFaultReason}
                 workspaceFaultProblems={workspaceFaultProblems}
+                onAskAgentToFix={(problems) => void requestAgentWorkspaceRepair(problems)}
                 onRetryWorkspace={retryWorkspaceClassification}
                 widgetConfig={widgetConfigs.emulator}
                 widgetValuesByConfig={widgetValuesByConfig}

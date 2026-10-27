@@ -97,6 +97,8 @@ export type EmulatorPanelProps = {
   workspaceFaultProblems?: WorkspaceFaultReason[];
   /** Re-classifies the workspace; resolves to the fresh reason, or null when healthy. */
   onRetryWorkspace: () => Promise<string | null>;
+  /** Sends a repair prompt into the current chat session, when the app can. */
+  onAskAgentToFix?: (problems: WorkspaceFaultReason[]) => void | Promise<void>;
   widgetConfig: WidgetConfigSnapshot;
   widgetValuesByConfig: WidgetValueStore;
   onWidgetValuesChange: (configKey: string, values: WidgetFieldValues) => void;
@@ -109,6 +111,7 @@ export function EmulatorPanel({
   workspaceFaultReason,
   workspaceFaultProblems,
   onRetryWorkspace,
+  onAskAgentToFix,
   widgetConfig,
   widgetValuesByConfig,
   onWidgetValuesChange,
@@ -208,6 +211,7 @@ export function EmulatorPanel({
   // a foreign one, so that control must not inherit the fault gate.
   const canReloadCurrentWorkspace = canStartOrReloadEmulator(workspacePath);
   const [retryingWorkspace, setRetryingWorkspace] = useState(false);
+  const [askingAgentToFix, setAskingAgentToFix] = useState(false);
 
   useEffect(() => {
     zoomOpenRef.current = zoomOpen;
@@ -794,6 +798,22 @@ export function EmulatorPanel({
     }
   }
 
+  /**
+   * Hands the fault to the agent as a normal user message, so the run is visible
+   * in the transcript and can be stopped the same way as a typed prompt.
+   */
+  async function askAgentToFixWorkspace() {
+    if (!onAskAgentToFix) {
+      return;
+    }
+    setAskingAgentToFix(true);
+    try {
+      await onAskAgentToFix(workspaceFaultProblems ?? (workspaceFaultReason ? [workspaceFaultReason] : []));
+    } finally {
+      setAskingAgentToFix(false);
+    }
+  }
+
   async function applyParamsAndReload() {
     await applyWidgetParamsAndReload({
       config: widgetConfig,
@@ -857,6 +877,8 @@ export function EmulatorPanel({
           problems={workspaceFaultProblems}
           onRetry={retryWorkspaceFault}
           retrying={retryingWorkspace}
+          onAskAgentToFix={onAskAgentToFix ? askAgentToFixWorkspace : undefined}
+          askingAgent={askingAgentToFix}
         />
       ) : null}
       <div className="relative flex min-h-0 flex-1 flex-col items-stretch justify-start gap-0 overflow-hidden p-0 text-[var(--color-emulator-canvas-hint)]">

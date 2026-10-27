@@ -37,6 +37,28 @@ describe("WorkspaceFaultLabel", () => {
     expect(markup).toContain("+2 more");
   });
 
+  it("offers an agent fix only when a handler is wired", () => {
+    const wired = renderToStaticMarkup(
+      <WorkspaceFaultLabel reason="missing_main_py" onRetry={vi.fn()} retrying={false} onAskAgentToFix={vi.fn()} />
+    );
+    const unwired = renderToStaticMarkup(
+      <WorkspaceFaultLabel reason="missing_main_py" onRetry={vi.fn()} retrying={false} />
+    );
+    expect(wired).toContain("Fix with agent");
+    expect(unwired).not.toContain("Fix with agent");
+  });
+
+  it("blocks the agent fix while a request is being sent", () => {
+    const idle = renderToStaticMarkup(
+      <WorkspaceFaultLabel reason="missing_main_py" onRetry={vi.fn()} retrying={false} onAskAgentToFix={vi.fn()} />
+    );
+    const busy = renderToStaticMarkup(
+      <WorkspaceFaultLabel reason="missing_main_py" onRetry={vi.fn()} retrying={false} onAskAgentToFix={vi.fn()} askingAgent />
+    );
+    expect(idle).not.toContain("Sending to agent");
+    expect(busy).toContain("Sending to agent");
+  });
+
   it("is announced as an alert", () => {
     const markup = renderToStaticMarkup(
       <WorkspaceFaultLabel reason="missing_pyproject" onRetry={vi.fn()} retrying={false} />

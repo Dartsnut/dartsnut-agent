@@ -1,4 +1,4 @@
-import { ChevronDown, LoaderCircle, RotateCw } from "lucide-react";
+import { ChevronDown, LoaderCircle, RotateCw, Wand2 } from "lucide-react";
 import { useState } from "react";
 import { cn } from "./cn";
 import { workspaceFaultCopy, type WorkspaceFaultReason } from "./workspaceFaultCopy";
@@ -11,6 +11,10 @@ export type WorkspaceFaultLabelProps = {
   /** Re-runs classification, then pokes the runtime when the workspace is healthy. */
   onRetry: () => void | Promise<void>;
   retrying: boolean;
+  /** Sends a repair prompt into the current chat session. Hidden when unwired. */
+  onAskAgentToFix?: () => void | Promise<void>;
+  /** True while the repair prompt is being submitted. */
+  askingAgent?: boolean;
   /** Starts with the fix text shown; collapsed by default. */
   defaultExpanded?: boolean;
 };
@@ -27,6 +31,8 @@ export function WorkspaceFaultLabel({
   problems,
   onRetry,
   retrying,
+  onAskAgentToFix,
+  askingAgent = false,
   defaultExpanded = false,
 }: WorkspaceFaultLabelProps) {
   const [expanded, setExpanded] = useState(defaultExpanded);
@@ -59,6 +65,22 @@ export function WorkspaceFaultLabel({
           )}
           <span className="ml-1">Retry</span>
         </button>
+        {onAskAgentToFix ? (
+          <button
+            type="button"
+            className="shrink-0 rounded-md border border-[var(--color-error-border)] px-2 py-1 text-[11px] font-medium transition-colors hover:bg-[var(--color-error-soft-bg)] disabled:cursor-not-allowed disabled:opacity-50"
+            disabled={askingAgent}
+            onClick={() => void onAskAgentToFix()}
+            title="Ask the agent to fix this workspace in the current chat"
+          >
+            {askingAgent ? (
+              <LoaderCircle size={12} className="animate-spin" aria-hidden />
+            ) : (
+              <Wand2 size={12} aria-hidden />
+            )}
+            <span className="ml-1">{askingAgent ? "Sending to agent" : "Fix with agent"}</span>
+          </button>
+        ) : null}
       </div>
       <button
         type="button"
