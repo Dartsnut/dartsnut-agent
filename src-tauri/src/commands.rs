@@ -624,7 +624,9 @@ fn workspace_root_path(state: &AppState) -> Option<PathBuf> {
 }
 
 fn workspace_eligibility(state: &AppState) -> Value {
-    eligibility_for_root(workspace_root_path(state).as_deref())
+    // Runnability, not bare eligibility: the panel must be able to explain a
+    // missing main.py, which only `workspace_runnable` reports.
+    workspace_runnable(workspace_root_path(state).as_deref())
 }
 
 pub(crate) fn eligibility_for_root(root: Option<&Path>) -> Value {
@@ -665,45 +667,86 @@ pub fn deploy_get_eligibility(state: State<'_, AppState>) -> Value {
     workspace_eligibility(&state)
 }
 
+/// Classifies the workspace manifests.
+///
+/// Collects *every* problem it can reach rather than stopping at the first, so
+/// the UI can itemise what is wrong instead of naming one symptom. `reason`
+/// stays the first problem for consumers that only understand a single code.
 fn classify_dartsnut_project_files(
     pyproject_text: Option<&str>,
     conf_json_text: Option<&str>,
 ) -> Value {
     let Some(pyproject_text) = pyproject_text else {
-        return json!({"ok":false,"reason":"missing_pyproject"});
+        return ineligible(&["missing_pyproject"]);
     };
     let Ok(pyproject) = toml::from_str::<toml::Value>(pyproject_text) else {
-        return json!({"ok":false,"reason":"invalid_pyproject"});
+        return ineligible(&["pyproject_unparseable"]);
     };
     let Some(project) = pyproject.get("project").and_then(toml::Value::as_table) else {
-        return json!({"ok":false,"reason":"invalid_pyproject"});
+        return ineligible(&["pyproject_no_project_table"]);
     };
+
+    let mut problems: Vec<&str> = Vec::new();
     let app_id = project
         .get("name")
         .and_then(toml::Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty());
-    let Some(app_id) = app_id else {
-        return json!({"ok":false,"reason":"missing_project_name"});
-    };
+    if app_id.is_none() {
+        problems.push("missing_project_name");
+    }
     let version = project
         .get("version")
         .and_then(toml::Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty());
-    let Some(version) = version else {
-        return json!({"ok":false,"reason":"missing_project_version"});
-    };
-    let Some(dependencies) = project
+    if version.is_none() {
+        problems.push("missing_project_version");
+    }
+
+    let dependencies = project
         .get("dependencies")
         .and_then(toml::Value::as_array)
-        .filter(|items| items.iter().all(|item| item.as_str().is_some()))
-    else {
-        return json!({"ok":false,"reason":"invalid_pyproject"});
+        .filter(|items| items.iter().all(|item| item.as_str().is_some()));
+    match dependencies {
+        None => problems.push("pyproject_bad_dependencies"),
+        Some(dependencies) if !declares_pydartsnut(dependencies) => {
+            problems.push("missing_pydartsnut")
+        }
+        Some(_) => {}
+    }
+
+    if !problems.is_empty() {
+        return ineligible(&problems);
+    }
+    let (app_id, version) = (app_id.unwrap_or_default(), version.unwrap_or_default());
+
+    let Some(conf_json_text) = conf_json_text else {
+        return json!({"ok":true,"appId":app_id,"version":version,"projectType":"game"});
     };
+    let Ok(conf) = serde_json::from_str::<Value>(conf_json_text) else {
+        return ineligible(&["conf_unparseable"]);
+    };
+    let Some(conf) = conf.as_object() else {
+        return ineligible(&["conf_not_object"]);
+    };
+    if conf.get("type").and_then(Value::as_str) == Some("game") {
+        return json!({"ok":true,"appId":app_id,"version":version,"projectType":"game"});
+    }
+    if !conf.contains_key("size") || !conf.contains_key("fields") {
+        return ineligible(&["conf_missing_widget_keys"]);
+    }
+    json!({"ok":true,"appId":app_id,"version":version,"projectType":"widget"})
+}
+
+fn ineligible(problems: &[&str]) -> Value {
+    json!({"ok":false,"reason":problems[0],"problems":problems})
+}
+
+fn declares_pydartsnut(dependencies: &[toml::Value]) -> bool {
     let package_name = regex::Regex::new(r"^\s*([A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)")
         .expect("package requirement regex must compile");
-    let has_pydartsnut = dependencies.iter().any(|dependency| {
+    dependencies.iter().any(|dependency| {
         let Some(requirement) = dependency.as_str() else {
             return false;
         };
@@ -718,27 +761,7 @@ fn classify_dartsnut_project_files(
                     .eq_ignore_ascii_case("pydartsnut")
             })
             .unwrap_or(false)
-    });
-    if !has_pydartsnut {
-        return json!({"ok":false,"reason":"missing_pydartsnut"});
-    }
-
-    let Some(conf_json_text) = conf_json_text else {
-        return json!({"ok":true,"appId":app_id,"version":version,"projectType":"game"});
-    };
-    let Ok(conf) = serde_json::from_str::<Value>(conf_json_text) else {
-        return json!({"ok":false,"reason":"broken_widget"});
-    };
-    let Some(conf) = conf.as_object() else {
-        return json!({"ok":false,"reason":"broken_widget"});
-    };
-    if conf.get("type").and_then(Value::as_str) == Some("game") {
-        return json!({"ok":true,"appId":app_id,"version":version,"projectType":"game"});
-    }
-    if !conf.contains_key("size") || !conf.contains_key("fields") {
-        return json!({"ok":false,"reason":"broken_widget"});
-    }
-    json!({"ok":true,"appId":app_id,"version":version,"projectType":"widget"})
+    })
 }
 
 fn widget_config_snapshot(scope: &str, conf_path: &std::path::Path, conf: &Value) -> Value {
@@ -951,7 +974,42 @@ dependencies = ["Py_DartsNut[extra] >= 1"]
         );
         assert_eq!(
             classify_dartsnut_project_files(Some(PYPROJECT), Some("{}"))["reason"],
-            "broken_widget"
+            "conf_missing_widget_keys"
+        );
+    }
+
+    #[test]
+    fn pyproject_failures_report_distinct_reasons() {
+        assert_eq!(
+            classify_dartsnut_project_files(Some("[project"), None)["reason"],
+            "pyproject_unparseable"
+        );
+        assert_eq!(
+            classify_dartsnut_project_files(Some("name = \"demo\""), None)["reason"],
+            "pyproject_no_project_table"
+        );
+        assert_eq!(
+            classify_dartsnut_project_files(
+                Some("[project]\nname = \"demo\"\nversion = \"1.0.0\"\ndependencies = \"pydartsnut\"\n"),
+                None,
+            )["reason"],
+            "pyproject_bad_dependencies"
+        );
+    }
+
+    #[test]
+    fn conf_failures_report_distinct_reasons() {
+        assert_eq!(
+            classify_dartsnut_project_files(Some(PYPROJECT), Some("{not json"))["reason"],
+            "conf_unparseable"
+        );
+        assert_eq!(
+            classify_dartsnut_project_files(Some(PYPROJECT), Some("[]"))["reason"],
+            "conf_not_object"
+        );
+        assert_eq!(
+            classify_dartsnut_project_files(Some(PYPROJECT), Some(r#"{"size":[128,64]}"#))["reason"],
+            "conf_missing_widget_keys"
         );
     }
 
@@ -1008,6 +1066,39 @@ dependencies = ["Py_DartsNut[extra] >= 1"]
         assert_eq!(game["projectType"], "game");
         fs::write(root.join("conf.json"), r#"{"size":[128,64],"fields":[]}"#).unwrap();
         assert_eq!(workspace_runnable(Some(&root))["projectType"], "widget");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn independent_metadata_problems_are_all_reported() {
+        // No name, no version, no pydartsnut: three separate things to fix.
+        let broken = "[project]\ndependencies = [\"requests\"]\n";
+        let result = classify_dartsnut_project_files(Some(broken), None);
+        assert_eq!(result["ok"], false);
+        assert_eq!(result["reason"], "missing_project_name");
+        let problems: Vec<&str> = result["problems"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap())
+            .collect();
+        assert_eq!(
+            problems,
+            ["missing_project_name", "missing_project_version", "missing_pydartsnut"]
+        );
+    }
+
+    #[test]
+    fn missing_main_py_is_reported_without_going_through_a_wrapper() {
+        let root = std::env::temp_dir().join(format!(
+            "dartsnut-rendered-eligibility-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("pyproject.toml"), PYPROJECT).unwrap();
+        assert_eq!(workspace_runnable(Some(&root))["reason"], "missing_main_py");
+        fs::write(root.join("main.py"), "print('ok')\n").unwrap();
+        assert_eq!(workspace_runnable(Some(&root))["ok"], true);
         let _ = fs::remove_dir_all(root);
     }
 }

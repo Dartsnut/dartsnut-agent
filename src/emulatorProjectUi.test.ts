@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canStartOrReloadEmulator, isResolvedEmulatorWorkspace, isRunningProcessWorkspaceMismatch, isWidgetConfigForWorkspace, resolveEmulatorProjectType, shouldShowWidgetParams } from "./emulatorProjectUi";
+import { canStartOrReloadEmulator, isResolvedEmulatorWorkspace, isRunningProcessWorkspaceMismatch, isWidgetConfigForWorkspace, resolveEmulatorProjectType, shouldShowWidgetParams, shouldShowWorkspaceFaultLabel } from "./emulatorProjectUi";
 
 describe("emulator project UI", () => {
   it("hides widget params for games despite a stale ready config", () => {
@@ -42,6 +42,20 @@ describe("emulator project UI", () => {
     expect(isRunningProcessWorkspaceMismatch(true, "/projects/new", "/projects/new")).toBe(false);
     expect(isRunningProcessWorkspaceMismatch(false, "/projects/old", "/projects/new")).toBe(false);
     expect(isRunningProcessWorkspaceMismatch(true, null, "/projects/new")).toBe(false);
+  });
+
+  it("shows the workspace fault label only for a faulted workspace", () => {
+    expect(shouldShowWorkspaceFaultLabel("missing_main_py", false)).toBe(true);
+    expect(shouldShowWorkspaceFaultLabel(null, false)).toBe(false);
+  });
+
+  it("lets a running foreign workspace outrank the workspace fault label", () => {
+    expect(shouldShowWorkspaceFaultLabel("missing_main_py", true)).toBe(false);
+  });
+
+  it("disables start and reload while the workspace is faulted", () => {
+    expect(canStartOrReloadEmulator("/projects/demo")).toBe(true);
+    expect(canStartOrReloadEmulator("/projects/demo", { workspaceFaulted: true })).toBe(false);
   });
 
 });

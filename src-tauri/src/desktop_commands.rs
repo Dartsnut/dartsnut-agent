@@ -1976,7 +1976,9 @@ pub async fn community_get_publish_options(
     );
     let widget = sd.get("WIDGET").cloned().unwrap_or_else(|| json!({}));
     let workspace = state.workspace_root.lock().ok().and_then(|v| v.clone());
-    let status = crate::commands::eligibility_for_root(workspace.as_deref());
+    // Runnability, matching what the emulator panel shows: a project without
+    // main.py must not report itself deployable here while the panel faults.
+    let status = crate::commands::workspace_runnable(workspace.as_deref());
     let conf = workspace
         .as_deref()
         .and_then(|root| std::fs::read_to_string(root.join("conf.json")).ok())

@@ -28,7 +28,10 @@ import {
   isWidgetConfigForWorkspace,
   resolveEmulatorProjectType,
   shouldShowWidgetParams,
+  shouldShowWorkspaceFaultLabel,
 } from "./emulatorProjectUi";
+import { WorkspaceFaultLabel } from "./WorkspaceFaultLabel";
+import type { WorkspaceFaultReason } from "./workspaceFaultCopy";
 import { applyWidgetParamsAndReload, type WidgetValueStore } from "./widgetParams";
 import { WidgetParamsEditor } from "./WidgetParamsEditor";
 import { tauriClient } from "./lib/tauriClient";
@@ -88,6 +91,14 @@ function isEmulatorStoppedWithError(state: EmulatorStateSnapshot): boolean {
 export type EmulatorPanelProps = {
   workspacePath: string;
   workspaceProjectType: ProjectType | null;
+  /** Backend reason code when the workspace cannot run; null when healthy. */
+  workspaceFaultReason: WorkspaceFaultReason | null;
+  /** Every problem the backend found for this workspace, when it reported more than one. */
+  workspaceFaultProblems?: WorkspaceFaultReason[];
+  /** Re-classifies the workspace; resolves to the fresh reason, or null when healthy. */
+  onRetryWorkspace: () => Promise<string | null>;
+  /** Sends a repair prompt into the current chat session, when the app can. */
+  onAskAgentToFix?: (problems: WorkspaceFaultReason[]) => void | Promise<void>;
   widgetConfig: WidgetConfigSnapshot;
   widgetValuesByConfig: WidgetValueStore;
   onWidgetValuesChange: (configKey: string, values: WidgetFieldValues) => void;
@@ -97,6 +108,10 @@ export type EmulatorPanelProps = {
 export function EmulatorPanel({
   workspacePath,
   workspaceProjectType,
+  workspaceFaultReason,
+  workspaceFaultProblems,
+  onRetryWorkspace,
+  onAskAgentToFix,
   widgetConfig,
   widgetValuesByConfig,
   onWidgetValuesChange,
@@ -130,6 +145,9 @@ export function EmulatorPanel({
   const nextWorkerSequenceRef = useRef(0);
   const activeWorkerSequenceRef = useRef<number | null>(null);
   const latestFrameMetaRef = useRef<{ width: number; height: number } | null>(null);
+  // Set once a frame has actually been presented; survives the workspace going
+  // faulty so the frozen frame can be labelled stale instead of silently kept.
+  const framePresentedRef = useRef(false);
   const gridOverlayCacheRef = useRef<Map<string, HTMLCanvasElement>>(new Map());
   const captureTimesRef = useRef<number[]>([]);
   const renderTimesRef = useRef<number[]>([]);
@@ -173,11 +191,27 @@ export function EmulatorPanel({
   const venvPreparing = venvPrepDisplay.visible;
   const venvPrepMessage = venvPrepDisplay.message;
   const audioToggleLabel = state.audioMuted ? "Unmute emulator audio" : "Mute emulator audio";
+  const gifElapsed = formatRecordingElapsed(state.gifElapsedMs ?? 0);
   const gifRecording = state.gifRecording === true;
   const gifSaving = state.gifSaving === true;
-  const gifElapsed = formatRecordingElapsed(state.gifElapsedMs ?? 0);
   const gifProgress = Math.min(1, Math.max(0, (state.gifElapsedMs ?? 0) / 30_000));
-  const canStartOrReload = canStartOrReloadEmulator(workspacePath);
+  const workspaceFaulted = Boolean(workspaceFaultReason);
+  // The running-foreign-workspace alert outranks the workspace fault label:
+  // the panel is still showing a valid workspace, just not the selected one.
+  const showWorkspaceFault = shouldShowWorkspaceFaultLabel(workspaceFaultReason, runningProcessWorkspaceMismatch);
+  // A stale frame from before the fault stays on the canvas, marked, instead of
+  // going black — blanking the surface would repeat the ambiguity this removes.
+  // A running session that goes faulty keeps rendering its own (valid) workspace,
+  // so only the frozen case is labelled stale.
+  const showStaleFrameMarker = workspaceFaulted && !state.running && framePresentedRef.current;
+  // Start only: Reload has its own gate below, because reloading to the
+  // selected workspace is the fix for a foreign-workspace panel.
+  const canStartEmulator = canStartOrReloadEmulator(workspacePath, { workspaceFaulted });
+  // Reloading back to the *selected* workspace is the fix for a panel pinned to
+  // a foreign one, so that control must not inherit the fault gate.
+  const canReloadCurrentWorkspace = canStartOrReloadEmulator(workspacePath);
+  const [retryingWorkspace, setRetryingWorkspace] = useState(false);
+  const [askingAgentToFix, setAskingAgentToFix] = useState(false);
 
   useEffect(() => {
     zoomOpenRef.current = zoomOpen;
@@ -263,6 +297,7 @@ export function EmulatorPanel({
     activeWorkerSequenceRef.current = null;
     pendingFrameRef.current = null;
     latestFrameMetaRef.current = null;
+    framePresentedRef.current = false;
     setFrameSize(null);
     setFrameRenderError(false);
     workerBusyRef.current = false;
@@ -492,6 +527,7 @@ export function EmulatorPanel({
         return;
       }
       setFrameRenderError(false);
+      framePresentedRef.current = true;
       const now = performance.now();
       renderTimesRef.current.push(now);
       updateNormalizedFps(now);
@@ -745,6 +781,39 @@ export function EmulatorPanel({
     setDartCoords(Array.from({ length: 12 }, () => null));
   }
 
+  /**
+   * Retry re-checks the workspace *and* pokes the runtime: re-classifying
+   * alone would leave a repaired workspace showing the same stale panel.
+   */
+  async function retryWorkspaceFault() {
+    setRetryingWorkspace(true);
+    try {
+      const reason = await onRetryWorkspace();
+      if (reason) {
+        return;
+      }
+      await applyWidgetPathAndReload(workspacePath);
+    } finally {
+      setRetryingWorkspace(false);
+    }
+  }
+
+  /**
+   * Hands the fault to the agent as a normal user message, so the run is visible
+   * in the transcript and can be stopped the same way as a typed prompt.
+   */
+  async function askAgentToFixWorkspace() {
+    if (!onAskAgentToFix) {
+      return;
+    }
+    setAskingAgentToFix(true);
+    try {
+      await onAskAgentToFix(workspaceFaultProblems ?? (workspaceFaultReason ? [workspaceFaultReason] : []));
+    } finally {
+      setAskingAgentToFix(false);
+    }
+  }
+
   async function applyParamsAndReload() {
     await applyWidgetParamsAndReload({
       config: widgetConfig,
@@ -802,6 +871,16 @@ export function EmulatorPanel({
 
   return (
     <section className="flex h-full min-h-0 flex-col bg-[var(--color-emulator-bg)] text-[var(--color-emulator-text)]">
+      {showWorkspaceFault && workspaceFaultReason ? (
+        <WorkspaceFaultLabel
+          reason={workspaceFaultReason}
+          problems={workspaceFaultProblems}
+          onRetry={retryWorkspaceFault}
+          retrying={retryingWorkspace}
+          onAskAgentToFix={onAskAgentToFix ? askAgentToFixWorkspace : undefined}
+          askingAgent={askingAgentToFix}
+        />
+      ) : null}
       <div className="relative flex min-h-0 flex-1 flex-col items-stretch justify-start gap-0 overflow-hidden p-0 text-[var(--color-emulator-canvas-hint)]">
         {runningProcessWorkspaceMismatch ? (
           <div
@@ -815,7 +894,7 @@ export function EmulatorPanel({
             <button
               type="button"
               className="shrink-0 rounded-md border border-[rgba(245,158,11,0.5)] bg-[rgba(245,158,11,0.14)] px-2 py-1 text-[11px] font-medium text-[var(--color-warning-text)] transition-colors hover:bg-[rgba(245,158,11,0.24)] disabled:cursor-not-allowed disabled:opacity-50"
-              disabled={!canStartOrReload}
+              disabled={!canReloadCurrentWorkspace}
               onClick={() => void applyWidgetPathAndReload(workspacePath)}
             >
               Reload current workspace
@@ -949,6 +1028,15 @@ export function EmulatorPanel({
                 <span className="min-w-0 truncate">{venvPrepMessage}</span>
               </div>
             ) : null}
+            {showStaleFrameMarker ? (
+              <div
+                className="pointer-events-none absolute inset-x-0 top-0 z-10 flex items-center justify-center gap-2 border-b border-[var(--color-error-border)] bg-[var(--color-error-bg)] px-3 py-1 text-[10px] font-medium uppercase tracking-wide text-[var(--color-error-text)]"
+                role="status"
+                aria-live="polite"
+              >
+                Stale frame — workspace no longer runs
+              </div>
+            ) : null}
             </div>
             <div className="box-border m-0 flex w-full max-w-[310px] shrink-0 flex-row items-center justify-center gap-2.5 self-stretch px-1 pb-1 pt-0.5 text-center text-[11px] tabular-nums text-[var(--color-state-line)]">
               {venvPreparing ? (
@@ -974,7 +1062,7 @@ export function EmulatorPanel({
             <button
               type="button"
               className={emuToolbarIconBtn}
-              disabled={!canStartOrReload}
+              disabled={!canStartEmulator}
               onClick={() => void applyWidgetPathAndReload(workspacePath)}
               aria-label="Start or reload"
               data-analytics-id="emulator_start_reload"
