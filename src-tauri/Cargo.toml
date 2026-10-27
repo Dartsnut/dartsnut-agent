@@ -1,6 +1,6 @@
 [package]
 name = "dartsnut-agent"
-version = "2.1.2"
+version = "2.2.0"
 description = "Dartsnut Agent desktop application"
 authors = ["Dartsnut"]
 edition = "2021"
