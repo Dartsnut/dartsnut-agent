@@ -1080,8 +1080,6 @@ export function App() {
   const promptInputRef = useRef<HTMLTextAreaElement | null>(null);
   const personaController = useChatPersonaController();
   const personaState = personaController.state;
-  /** `personaState` narrowed to the ready variant, where chatId/profileId exist. */
-  const readyPersona = personaState.phase === "ready" ? personaState : null;
   const [composerExpandedSticky, setComposerExpandedSticky] = useState(false);
   const [providerSettings, setProviderSettings] = useState<ProviderSettings>(DEFAULT_PROVIDER_SETTINGS);
   const [analyticsEnabled, setAnalyticsEnabled] = useState(() => getAnalyticsCollectionEnabled());
@@ -2360,7 +2358,7 @@ export function App() {
       if (chatDisabled) {
         return;
       }
-      if (!readyPersona || readyPersona.chatId !== bootstrap?.activeChatId) {
+      if (!agentProfileId) {
         return;
       }
       if (bootstrap?.providerStatus !== "ready") {
@@ -2370,7 +2368,7 @@ export function App() {
       const promptText = workspaceFixPrompt(problems);
       setEntries((prev) => [...prev, { id: `user-${Date.now()}`, role: "user", text: promptText }]);
       await submitPrompt(
-        sessionPromptRequest(promptText, { agentProfileId: readyPersona.profileId }),
+        sessionPromptRequest(promptText, { agentProfileId }),
         promptText
       );
     },
@@ -2379,9 +2377,9 @@ export function App() {
       bootstrap?.activeProjectId,
       bootstrap?.providerStatus,
       bootstrap?.workspaceRoot,
+      agentProfileId,
       chatDisabled,
       postStatus,
-      readyPersona,
       sessionProjectType,
       sessionTemplateMode,
       sessionWidgetSize
