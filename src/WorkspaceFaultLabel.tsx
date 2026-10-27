@@ -1,4 +1,4 @@
-import { ChevronDown, FolderOpen, LoaderCircle, RotateCw } from "lucide-react";
+import { ChevronDown, LoaderCircle, RotateCw } from "lucide-react";
 import { useState } from "react";
 import { cn } from "./cn";
 import { workspaceFaultCopy, type WorkspaceFaultReason } from "./workspaceFaultCopy";
@@ -11,8 +11,6 @@ export type WorkspaceFaultLabelProps = {
   /** Re-runs classification, then pokes the runtime when the workspace is healthy. */
   onRetry: () => void | Promise<void>;
   retrying: boolean;
-  /** Re-picks the project folder — the only in-app way to point at a fixed workspace. */
-  onChangeWorkspaceFolder?: () => void;
   /** Starts with the fix text shown; collapsed by default. */
   defaultExpanded?: boolean;
 };
@@ -29,7 +27,6 @@ export function WorkspaceFaultLabel({
   problems,
   onRetry,
   retrying,
-  onChangeWorkspaceFolder,
   defaultExpanded = false,
 }: WorkspaceFaultLabelProps) {
   const [expanded, setExpanded] = useState(defaultExpanded);
@@ -63,27 +60,15 @@ export function WorkspaceFaultLabel({
           <span className="ml-1">Retry</span>
         </button>
       </div>
-      <div className="flex min-w-0 items-start gap-3">
-        <button
-          type="button"
-          className="flex shrink-0 items-center gap-1 text-[11px] font-medium opacity-80 hover:opacity-100"
-          aria-expanded={expanded}
-          onClick={() => setExpanded((open) => !open)}
-        >
-          <ChevronDown size={12} className={cn("transition-transform", expanded && "rotate-180")} aria-hidden />
-          What to fix
-        </button>
-        {onChangeWorkspaceFolder ? (
-          <button
-            type="button"
-            className="flex shrink-0 items-center gap-1 text-[11px] font-medium opacity-80 hover:opacity-100"
-            onClick={() => onChangeWorkspaceFolder()}
-          >
-            <FolderOpen size={12} aria-hidden />
-            Change folder
-          </button>
-        ) : null}
-      </div>
+      <button
+        type="button"
+        className="flex w-fit shrink-0 items-center gap-1 text-[11px] font-medium opacity-80 hover:opacity-100"
+        aria-expanded={expanded}
+        onClick={() => setExpanded((open) => !open)}
+      >
+        <ChevronDown size={12} className={cn("transition-transform", expanded && "rotate-180")} aria-hidden />
+        What to fix
+      </button>
       {expanded ? (
         <ul className="m-0 flex list-none flex-col gap-1 p-0 text-[11px] leading-relaxed opacity-90">
           {faulted.map((problem) => {

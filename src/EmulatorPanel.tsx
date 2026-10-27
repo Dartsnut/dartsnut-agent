@@ -100,8 +100,6 @@ export type EmulatorPanelProps = {
   widgetConfig: WidgetConfigSnapshot;
   widgetValuesByConfig: WidgetValueStore;
   onWidgetValuesChange: (configKey: string, values: WidgetFieldValues) => void;
-  /** Re-picks the project folder, when the app offers that. */
-  onChangeWorkspaceFolder?: () => void;
   onEmulatorConfigChange: (snapshot: WidgetConfigSnapshot) => void;
 };
 
@@ -113,7 +111,6 @@ export function EmulatorPanel({
   onRetryWorkspace,
   widgetConfig,
   widgetValuesByConfig,
-  onChangeWorkspaceFolder,
   onWidgetValuesChange,
   onEmulatorConfigChange,
 }: EmulatorPanelProps) {
@@ -860,7 +857,6 @@ export function EmulatorPanel({
           problems={workspaceFaultProblems}
           onRetry={retryWorkspaceFault}
           retrying={retryingWorkspace}
-          onChangeWorkspaceFolder={onChangeWorkspaceFolder}
         />
       ) : null}
       <div className="relative flex min-h-0 flex-1 flex-col items-stretch justify-start gap-0 overflow-hidden p-0 text-[var(--color-emulator-canvas-hint)]">

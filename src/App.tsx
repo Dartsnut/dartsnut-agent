@@ -3833,7 +3833,6 @@ export function App() {
                 workspaceFaultReason={workspaceFaultReason}
                 workspaceFaultProblems={workspaceFaultProblems}
                 onRetryWorkspace={retryWorkspaceClassification}
-                onChangeWorkspaceFolder={() => void handlePickWorkspace()}
                 widgetConfig={widgetConfigs.emulator}
                 widgetValuesByConfig={widgetValuesByConfig}
                 onWidgetValuesChange={updateWidgetValues}
