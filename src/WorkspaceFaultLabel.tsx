@@ -71,15 +71,9 @@ export function WorkspaceFaultLabel({
       </button>
       {expanded ? (
         <ul className="m-0 flex list-none flex-col gap-1 p-0 text-[11px] leading-relaxed opacity-90">
-          {faulted.map((problem) => {
-            const copy = workspaceFaultCopy(problem);
-            return (
-              <li key={problem} className="flex flex-col gap-0.5">
-                <span className="font-medium">{copy.title}</span>
-                <span>{copy.fix}</span>
-              </li>
-            );
-          })}
+          {faulted.map((problem) => (
+            <li key={problem}>{workspaceFaultCopy(problem).fix}</li>
+          ))}
         </ul>
       ) : null}
     </div>

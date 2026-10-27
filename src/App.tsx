@@ -2672,14 +2672,6 @@ export function App() {
     }
   }
 
-  async function handlePickWorkspace() {
-    if (sending) {
-      return;
-    }
-    const updated = await api.pickWorkspace();
-    setBootstrap(updated.state);
-  }
-
   async function handleNewChat() {
     if (sending || projectSwitchProgress.active) return;
     await handleNoProject();

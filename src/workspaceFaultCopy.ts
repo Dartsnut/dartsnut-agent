@@ -75,9 +75,9 @@ export const WORKSPACE_FAULT_COPY: Record<WorkspaceFaultReason, WorkspaceFaultCo
     fix: "TODO: add size and fields, or set type to game",
   },
   missing_main_py: {
-    title: "TODO: no main.py",
-    detail: "TODO: the project has no main.py, so it cannot run",
-    fix: "TODO: create main.py",
+    title: "No main.py",
+    detail: "The project has no main.py, so it cannot run",
+    fix: "Rename entry point to main.py",
   },
 };
 
