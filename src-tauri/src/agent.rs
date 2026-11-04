@@ -221,7 +221,6 @@ fn app_mutated_since(transcript: &[TranscriptLine], start: usize) -> bool {
     })
 }
 
-
 fn is_resume_prompt(prompt: &str) -> bool {
     let trimmed = prompt
         .trim()
@@ -266,7 +265,11 @@ fn repair_prompt(user_prompt: &str, reason: &str) -> String {
     )
 }
 
-fn record_stream_event(app: &AppHandle, session: &mut SessionFile, event: crate::rig_runtime::StreamEvent) {
+fn record_stream_event(
+    app: &AppHandle,
+    session: &mut SessionFile,
+    event: crate::rig_runtime::StreamEvent,
+) {
     match event {
         crate::rig_runtime::StreamEvent::TextDelta(delta) => emit(
             app,
@@ -284,7 +287,10 @@ fn record_stream_event(app: &AppHandle, session: &mut SessionFile, event: crate:
                 kind: "tool".into(),
                 at,
                 text: String::new(),
-                tool_name: event.get("toolName").and_then(Value::as_str).map(str::to_owned),
+                tool_name: event
+                    .get("toolName")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
                 tool_call: Some(event.clone()),
             });
             let _ = persist_session(app, session);
@@ -306,7 +312,10 @@ fn record_stream_event(app: &AppHandle, session: &mut SessionFile, event: crate:
                 kind: "tool".into(),
                 at,
                 text,
-                tool_name: event.get("toolName").and_then(Value::as_str).map(str::to_owned),
+                tool_name: event
+                    .get("toolName")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
                 tool_call: Some(event.clone()),
             });
             let _ = persist_session(app, session);
@@ -534,9 +543,8 @@ async fn run_prompt(
                 json!({"ok":false,"failureReason":failure_reason,"message":format!("Dartsnut LLM unavailable: {error}")}),
             );
         }
-        let (model_name, api_format_name) = resolve_dartsnut_llm_transport(
-            crate::desktop_commands::community_llm_info(app).await,
-        )?;
+        let (model_name, api_format_name) =
+            resolve_dartsnut_llm_transport(crate::desktop_commands::community_llm_info(app).await)?;
         let token = crate::desktop_commands::community_token(app)
             .ok_or_else(|| "Sign in to your Dartsnut account to use Dartsnut LLM.".to_owned())?;
         let mut headers = HeaderMap::new();
@@ -554,7 +562,10 @@ async fn run_prompt(
             "x-dartsnut-agent-run-id",
             HeaderValue::from_str(&run_id).map_err(|_| "Invalid Dartsnut run ID".to_owned())?,
         );
-        let base_url = format!("{}/agent/llm/v1", crate::desktop_commands::community_base_url()?);
+        let base_url = format!(
+            "{}/agent/llm/v1",
+            crate::desktop_commands::community_base_url()?
+        );
         (
             base_url,
             "dartsnut-api-bridge".to_owned(),
@@ -570,7 +581,14 @@ async fn run_prompt(
         let api_format = settings.custom.api_format.as_deref();
         crate::rig_runtime::validate_agent_configuration(base, key, mdl, api_format)
             .map_err(|error| format!("Rig agent configuration failed: {error}"))?;
-        (base.to_owned(), key.to_owned(), mdl.to_owned(), None, None, settings.custom.api_format.clone())
+        (
+            base.to_owned(),
+            key.to_owned(),
+            mdl.to_owned(),
+            None,
+            None,
+            settings.custom.api_format.clone(),
+        )
     };
     let mut last_error = String::new();
     for attempt in 1..=MAX_ATTEMPTS {
@@ -603,12 +621,10 @@ async fn run_prompt(
         match result {
             Ok(mut outcome) => {
                 session.previous_response_id = outcome.response_id.clone();
-                let mutated =
-                    app_mutated_since(&session.transcript, transcript_len_before_attempt);
+                let mutated = app_mutated_since(&session.transcript, transcript_len_before_attempt);
                 if mutated {
                     for _ in 0..WORKSPACE_FIX_ROUNDS {
-                        let status =
-                            crate::commands::workspace_runnable(workspace_root.as_deref());
+                        let status = crate::commands::workspace_runnable(workspace_root.as_deref());
                         if status.get("ok").and_then(Value::as_bool) == Some(true) {
                             break;
                         }
@@ -671,7 +687,9 @@ async fn run_prompt(
                         app,
                         json!({"type":"error","message":last_error,"at":now_ms()}),
                     );
-                    return Ok(json!({"ok":false,"failureReason":"empty_assistant_response","message":"The model finished without a reply. Try sending the request again."}));
+                    return Ok(
+                        json!({"ok":false,"failureReason":"empty_assistant_response","message":"The model finished without a reply. Try sending the request again."}),
+                    );
                 }
                 session.updated_at = Some(chrono::Utc::now().to_rfc3339());
                 session.transcript.push(TranscriptLine {
@@ -710,7 +728,8 @@ async fn run_prompt(
                 eprintln!("Agent request attempt {} failed: {}", attempt, last_error);
             }
         }
-        let tools_this_attempt = tools_ran_since(&session.transcript, transcript_len_before_attempt);
+        let tools_this_attempt =
+            tools_ran_since(&session.transcript, transcript_len_before_attempt);
         if !should_retry_agent_attempt(attempt, tools_this_attempt) {
             break;
         }
@@ -720,7 +739,9 @@ async fn run_prompt(
         );
         sleep(Duration::from_millis(100 * attempt as u64)).await;
     }
-    if last_error.contains("UNSUPPORTED_API_FORMAT") || last_error.contains("unsupported_api_format") {
+    if last_error.contains("UNSUPPORTED_API_FORMAT")
+        || last_error.contains("unsupported_api_format")
+    {
         return Ok(json!({
             "ok": false,
             "failureReason": "service_unavailable",
@@ -885,11 +906,7 @@ mod tests {
         );
     }
 
-    fn tool_event(
-        name: &str,
-        text: &str,
-        tool_call: Option<Value>,
-    ) -> TranscriptLine {
+    fn tool_event(name: &str, text: &str, tool_call: Option<Value>) -> TranscriptLine {
         TranscriptLine {
             kind: "tool".into(),
             at: 1,
@@ -904,12 +921,16 @@ mod tests {
         let apply = tool_event(
             "apply_patch",
             "apply_patch succeeded: {\"ok\":true}",
-            Some(json!({"type":"tool_call","phase":"finished","status":"succeeded","toolName":"apply_patch"})),
+            Some(
+                json!({"type":"tool_call","phase":"finished","status":"succeeded","toolName":"apply_patch"}),
+            ),
         );
         let copy_asset = tool_event(
             "copy_asset_file",
             "copy_asset_file succeeded",
-            Some(json!({"type":"tool_call","phase":"finished","status":"succeeded","toolName":"copy_asset_file"})),
+            Some(
+                json!({"type":"tool_call","phase":"finished","status":"succeeded","toolName":"copy_asset_file"}),
+            ),
         );
         let compact_copy = tool_event(
             "copy_chat_attachment",
@@ -929,22 +950,30 @@ mod tests {
         let failed = tool_event(
             "apply_patch",
             "apply_patch failed: boom",
-            Some(json!({"type":"tool_call","phase":"finished","status":"failed","toolName":"apply_patch"})),
+            Some(
+                json!({"type":"tool_call","phase":"finished","status":"failed","toolName":"apply_patch"}),
+            ),
         );
         let read = tool_event(
             "read_file",
             "read_file succeeded",
-            Some(json!({"type":"tool_call","phase":"finished","status":"succeeded","toolName":"read_file"})),
+            Some(
+                json!({"type":"tool_call","phase":"finished","status":"succeeded","toolName":"read_file"}),
+            ),
         );
         let skill = tool_event(
             "get_dartsnut_skill",
             "get_dartsnut_skill succeeded",
-            Some(json!({"type":"tool_call","phase":"finished","status":"succeeded","toolName":"get_dartsnut_skill"})),
+            Some(
+                json!({"type":"tool_call","phase":"finished","status":"succeeded","toolName":"get_dartsnut_skill"}),
+            ),
         );
         let check = tool_event(
             "check_python",
             "check_python succeeded",
-            Some(json!({"type":"tool_call","phase":"finished","status":"succeeded","toolName":"check_python"})),
+            Some(
+                json!({"type":"tool_call","phase":"finished","status":"succeeded","toolName":"check_python"}),
+            ),
         );
         assert!(!app_mutated_since(&[started], 0));
         assert!(!app_mutated_since(&[failed], 0));

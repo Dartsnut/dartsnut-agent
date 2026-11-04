@@ -294,7 +294,9 @@ mod tests {
             !output.contains("agent lifecycle"),
             "rig agent info must stay filtered: {output}"
         );
-        assert!(output.contains("application lifecycle"), "missing application info: {output}");
+        assert!(
+            output.contains("application lifecycle"),
+            "missing application info: {output}"
+        );
     }
-
 }

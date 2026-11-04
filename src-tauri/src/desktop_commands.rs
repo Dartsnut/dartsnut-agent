@@ -44,7 +44,7 @@ pub(crate) fn community_base_url() -> Result<String, String> {
     if let Ok(debug_url) = std::env::var("DARTSNUT_LLM_BASE_URL") {
         return Ok(debug_url.trim_end_matches('/').to_owned());
     }
-    
+
     crate::commands::community_configured_env("DARTSNUT_BASE_API")
         .ok_or_else(|| "DARTSNUT_BASE_API is not configured.".to_owned())
         .map(|value| value.trim_end_matches('/').to_owned())
@@ -135,20 +135,18 @@ pub struct SupportedFormat {
 pub(crate) async fn community_llm_info(app: &AppHandle) -> Result<LlmBridgeInfo, String> {
     let token = community_token(app)
         .ok_or_else(|| "Sign in to your Dartsnut account to use Dartsnut LLM.".to_owned())?;
-    let (status, raw) = community_request(
-        reqwest::Method::GET,
-        "/agent/llm/info",
-        Some(&token),
-        None,
-    ).await?;
+    let (status, raw) =
+        community_request(reqwest::Method::GET, "/agent/llm/info", Some(&token), None).await?;
     if !(200..300).contains(&status) || raw.get("code").and_then(Value::as_i64) != Some(1001) {
-        let message = raw.get("desc")
+        let message = raw
+            .get("desc")
             .or_else(|| raw.get("msg"))
             .and_then(Value::as_str)
             .unwrap_or("Could not discover LLM endpoint configuration.");
         return Err(message.to_owned());
     }
-    let data = raw.get("data")
+    let data = raw
+        .get("data")
         .ok_or_else(|| "Discovery response missing data field.".to_owned())?;
     serde_json::from_value(data.clone())
         .map_err(|e| format!("Invalid discovery response: {} | Data: {:?}", e, data))
@@ -648,7 +646,9 @@ pub async fn download_app_update(
                 .lock()
                 .map_err(|_| "updater state unavailable")?;
             pending.downloading = false;
-            pending.state.download_failed("Update download failed. Try again.");
+            pending
+                .state
+                .download_failed("Update download failed. Try again.");
             let _ = app.emit("app:update-status-changed", pending.state.clone());
             return Ok(json!({"ok":false,"reason":"failed","message":message}));
         }
@@ -716,10 +716,8 @@ pub async fn check_app_update(
             Ok(json!({"ok":true}))
         }
         Err(error) => {
-            pending.state = crate::updates::UpdateState::error(
-                env!("CARGO_PKG_VERSION"),
-                error.clone(),
-            );
+            pending.state =
+                crate::updates::UpdateState::error(env!("CARGO_PKG_VERSION"), error.clone());
             let _ = app.emit("app:update-status-changed", pending.state.clone());
             Ok(json!({"ok":false,"reason":"failed","message":error}))
         }
@@ -783,9 +781,9 @@ pub async fn pick_images(app: AppHandle, payload: Option<Value>) -> Value {
         .as_ref()
         .and_then(|value| value.get("multiple").and_then(Value::as_bool))
         .unwrap_or(false);
-    
+
     let (sender, receiver) = tokio::sync::oneshot::channel();
-    
+
     if multiple {
         app.dialog()
             .file()
@@ -801,7 +799,7 @@ pub async fn pick_images(app: AppHandle, payload: Option<Value>) -> Value {
                 let _ = sender.send(path.map(|p| vec![p]));
             });
     }
-    
+
     match receiver.await.ok().flatten() {
         Some(paths) => {
             let mut files = Vec::new();

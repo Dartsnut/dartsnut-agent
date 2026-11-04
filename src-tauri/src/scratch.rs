@@ -37,7 +37,10 @@ pub enum ScratchWorkspace {
     /// Exactly one usable `.sb3` at the root.
     Project { path: PathBuf, app_id: String },
     /// The folder presents a Scratch payload the device would refuse.
-    Refused { reason: &'static str, problems: Vec<&'static str> },
+    Refused {
+        reason: &'static str,
+        problems: Vec<&'static str>,
+    },
 }
 
 /// True when the folder is a usable Scratch workspace. Convenience for callers
@@ -136,9 +139,9 @@ fn workspace_candidates(root: &Path) -> Vec<PathBuf> {
 /// not a second project.
 pub fn is_scratch_candidate(file_name: &str) -> bool {
     !file_name.starts_with("._")
-        && file_name
-            .rsplit_once('.')
-            .is_some_and(|(stem, extension)| !stem.is_empty() && extension.eq_ignore_ascii_case("sb3"))
+        && file_name.rsplit_once('.').is_some_and(|(stem, extension)| {
+            !stem.is_empty() && extension.eq_ignore_ascii_case("sb3")
+        })
 }
 
 /// Opens the archive and reports the first structural problem, or `None` when
@@ -216,10 +219,8 @@ mod tests {
     const USABLE: &str = r#"{"targets":[{"isStage":true,"name":"Stage"}]}"#;
 
     fn temp_root(label: &str) -> PathBuf {
-        let root = std::env::temp_dir().join(format!(
-            "dartsnut-scratch-{label}-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("dartsnut-scratch-{label}-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         root
     }
@@ -350,7 +351,8 @@ mod tests {
 
     #[test]
     fn a_missing_workspace_directory_reads_as_absent() {
-        let root = std::env::temp_dir().join(format!("dartsnut-scratch-gone-{}", uuid::Uuid::new_v4()));
+        let root =
+            std::env::temp_dir().join(format!("dartsnut-scratch-gone-{}", uuid::Uuid::new_v4()));
         assert_eq!(scan_workspace(&root), ScratchWorkspace::Absent);
     }
 

@@ -53,8 +53,14 @@ mod tests {
     #[test]
     fn parse_valid_formats() {
         assert_eq!("auto".parse::<ApiFormat>().unwrap(), ApiFormat::Auto);
-        assert_eq!("responses".parse::<ApiFormat>().unwrap(), ApiFormat::Responses);
-        assert_eq!("chat_completion".parse::<ApiFormat>().unwrap(), ApiFormat::ChatCompletion);
+        assert_eq!(
+            "responses".parse::<ApiFormat>().unwrap(),
+            ApiFormat::Responses
+        );
+        assert_eq!(
+            "chat_completion".parse::<ApiFormat>().unwrap(),
+            ApiFormat::ChatCompletion
+        );
         assert_eq!("claude".parse::<ApiFormat>().unwrap(), ApiFormat::Claude);
         assert_eq!("gemini".parse::<ApiFormat>().unwrap(), ApiFormat::Gemini);
     }
@@ -72,7 +78,10 @@ mod tests {
     #[test]
     fn other_formats_resolve_to_self() {
         assert_eq!(ApiFormat::Responses.resolve(), ApiFormat::Responses);
-        assert_eq!(ApiFormat::ChatCompletion.resolve(), ApiFormat::ChatCompletion);
+        assert_eq!(
+            ApiFormat::ChatCompletion.resolve(),
+            ApiFormat::ChatCompletion
+        );
         assert_eq!(ApiFormat::Claude.resolve(), ApiFormat::Claude);
         assert_eq!(ApiFormat::Gemini.resolve(), ApiFormat::Gemini);
     }

@@ -697,9 +697,8 @@ fn refuse_scratch_at_open(root: &Path) -> Option<String> {
         crate::scratch::ScratchWorkspace::Refused { reason, .. } => {
             Some(crate::scratch::refusal_message(reason).to_owned())
         }
-        crate::scratch::ScratchWorkspace::Project { .. } | crate::scratch::ScratchWorkspace::Absent => {
-            None
-        }
+        crate::scratch::ScratchWorkspace::Project { .. }
+        | crate::scratch::ScratchWorkspace::Absent => None,
     }
 }
 
@@ -711,7 +710,6 @@ pub(crate) fn attach_workspace_status(root: &Path, mut value: Value) -> Value {
     }
     value
 }
-
 
 #[tauri::command]
 pub fn deploy_get_eligibility(state: State<'_, AppState>) -> Value {
@@ -962,10 +960,7 @@ pub fn get_app_update_auto_download(app: AppHandle) -> bool {
 }
 
 #[tauri::command]
-pub fn set_app_update_auto_download(
-    app: AppHandle,
-    payload: Option<Value>,
-) -> bool {
+pub fn set_app_update_auto_download(app: AppHandle, payload: Option<Value>) -> bool {
     let enabled = payload
         .as_ref()
         .and_then(|v| v.as_bool())
@@ -1093,7 +1088,8 @@ dependencies = ["Py_DartsNut[extra] >= 1"]
             "conf_not_object"
         );
         assert_eq!(
-            classify_dartsnut_project_files(Some(PYPROJECT), Some(r#"{"size":[128,64]}"#), &Absent)["reason"],
+            classify_dartsnut_project_files(Some(PYPROJECT), Some(r#"{"size":[128,64]}"#), &Absent)
+                ["reason"],
             "conf_missing_widget_keys"
         );
     }
@@ -1111,10 +1107,8 @@ dependencies = ["Py_DartsNut[extra] >= 1"]
 
     #[test]
     fn eligibility_follows_workspace_files_on_disk() {
-        let root = std::env::temp_dir().join(format!(
-            "dartsnut-eligibility-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("dartsnut-eligibility-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         assert_eq!(
             eligibility_for_root(Some(&root))["reason"],
@@ -1142,7 +1136,10 @@ dependencies = ["Py_DartsNut[extra] >= 1"]
     fn workspace_runnable_requires_main_py_and_classifies_project() {
         let root = std::env::temp_dir().join(format!("dartsnut-runnable-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
-        assert_eq!(workspace_runnable(Some(&root))["reason"], "missing_pyproject");
+        assert_eq!(
+            workspace_runnable(Some(&root))["reason"],
+            "missing_pyproject"
+        );
         fs::write(root.join("pyproject.toml"), PYPROJECT).unwrap();
         assert_eq!(workspace_runnable(Some(&root))["reason"], "missing_main_py");
         fs::write(root.join("main.py"), "print('ok')\n").unwrap();
@@ -1169,7 +1166,11 @@ dependencies = ["Py_DartsNut[extra] >= 1"]
             .collect();
         assert_eq!(
             problems,
-            ["missing_project_name", "missing_project_version", "missing_pydartsnut"]
+            [
+                "missing_project_name",
+                "missing_project_version",
+                "missing_pydartsnut"
+            ]
         );
     }
 
@@ -1266,10 +1267,7 @@ dependencies = ["Py_DartsNut[extra] >= 1"]
     fn scratch_kind_is_reported_beside_the_python_kind() {
         let python = scratch_root("kind-python");
         fs::write(python.join("pyproject.toml"), PYPROJECT).unwrap();
-        assert_eq!(
-            crate::scratch::project_kind(Some(&python)),
-            Some("python")
-        );
+        assert_eq!(crate::scratch::project_kind(Some(&python)), Some("python"));
         let scratch = scratch_root("kind-scratch");
         write_sb3(&scratch.join("game.sb3"), USABLE_SB3);
         assert_eq!(
