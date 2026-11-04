@@ -2,13 +2,20 @@ import { useCallback, useReducer } from "react";
 import {
   normalizeAgentProfileId,
   type AgentProfileId,
-  type BootstrapState
+  type BootstrapState,
+  type ProjectKind
 } from "@dartsnut/desktop-contracts";
 
 type PersonaStateBase = { generation: number };
 
 export type ChatPersonaState =
   | (PersonaStateBase & { phase: "booting" })
+  /**
+   * The workspace has no chat and cannot have one — a Scratch project. Kept
+   * distinct from `idle` so nothing waits for a chat that will never arrive, and
+   * distinct from `picking` so no persona picker can render.
+   */
+  | (PersonaStateBase & { phase: "no-chat"; projectId: string | null })
   | (PersonaStateBase & { phase: "idle"; projectId: string | null })
   | (PersonaStateBase & { phase: "picking"; projectId: string | null })
   | (PersonaStateBase & { phase: "creating-project"; profileId: AgentProfileId })
@@ -17,7 +24,17 @@ export type ChatPersonaState =
   | (PersonaStateBase & { phase: "ready"; chatId: string; profileId: AgentProfileId });
 
 export type ChatPersonaAction =
-  | { type: "bootstrap"; activeProjectId: string | null; activeChatId: string | null }
+  | {
+      type: "bootstrap";
+      activeProjectId: string | null;
+      activeChatId: string | null;
+      /**
+       * Backend-decided. A Scratch workspace has no chat, so bootstrap must land
+       * in `no-chat` rather than `picking`; the renderer never infers this from
+       * a missing chat id.
+       */
+      projectKind?: ProjectKind | null;
+    }
   | { type: "new-chat"; projectId: string | null }
   | { type: "profile-selected"; profileId: AgentProfileId }
   | { type: "creation-succeeded"; chatId: string; profileId: AgentProfileId }
@@ -45,6 +62,16 @@ export function chatPersonaReducer(
 ): ChatPersonaState {
   switch (action.type) {
     case "bootstrap": {
+      if (action.projectKind === "scratch") {
+        if (state.phase === "no-chat" && state.projectId === action.activeProjectId) {
+          return state;
+        }
+        return {
+          phase: "no-chat",
+          generation: state.generation + 1,
+          projectId: action.activeProjectId
+        };
+      }
       if (action.activeChatId) {
         if (
           (state.phase === "ready" || state.phase === "hydrating") &&
@@ -86,6 +113,7 @@ export function chatPersonaReducer(
       };
     }
     case "new-chat":
+      if (state.phase === "no-chat") return state;
       return {
         phase: "picking",
         generation: state.generation + 1,
@@ -175,13 +203,17 @@ export function chatPersonaReducer(
 export function useChatPersonaController() {
   const [state, dispatch] = useReducer(chatPersonaReducer, INITIAL_CHAT_PERSONA_STATE);
 
-  const syncBootstrap = useCallback((bootstrap: Pick<BootstrapState, "activeProjectId" | "activeChatId">) => {
-    dispatch({
-      type: "bootstrap",
-      activeProjectId: bootstrap.activeProjectId,
-      activeChatId: bootstrap.activeChatId
-    });
-  }, []);
+  const syncBootstrap = useCallback(
+    (bootstrap: Pick<BootstrapState, "activeProjectId" | "activeChatId" | "projectKind">) => {
+      dispatch({
+        type: "bootstrap",
+        activeProjectId: bootstrap.activeProjectId,
+        activeChatId: bootstrap.activeChatId,
+        projectKind: bootstrap.projectKind
+      });
+    },
+    []
+  );
   const startNewChat = useCallback((projectId: string | null) => {
     dispatch({ type: "new-chat", projectId });
   }, []);
