@@ -7,9 +7,9 @@
   ],
   "scripts": {
     "dev": "node scripts/run-tauri-dev.mjs",
-    "dev:renderer": "vite --host 127.0.0.1 --port 5173 --strictPort",
+    "dev:renderer": "node scripts/build-editor-bundle.mjs && vite --host 127.0.0.1 --port 5173 --strictPort",
     "build:contracts": "pnpm --dir packages/desktop-contracts run build && pnpm --dir packages/emulator-protocol run build",
-    "build:renderer": "vite build",
+    "build:renderer": "node scripts/build-editor-bundle.mjs && vite build",
     "build:tauri": "pnpm run build:contracts && tauri build",
     "build": "pnpm run build:tauri",
     "package": "pnpm run build:tauri",
@@ -23,13 +23,16 @@
     "test:release-build": "node --test scripts/build-release.test.mjs",
     "test:renderer": "vitest run",
     "test:updater": "vitest run src/appUpdateStartup.test.ts src/appUpdateAutoDownload.test.ts src/appUpdateSettings.test.ts && cargo test --offline --manifest-path src-tauri/Cargo.toml updates",
-    "test": "pnpm --dir packages/desktop-contracts run test && pnpm --dir packages/emulator-protocol run test && pnpm run test:renderer && pnpm run test:release-build && pnpm run test:release-publish",
+    "test": "pnpm --dir packages/desktop-contracts run test && pnpm --dir packages/emulator-protocol run test && pnpm run test:renderer && pnpm run test:editor-bundle && pnpm run test:release-build && pnpm run test:release-publish",
     "export:agent-plugin": "node scripts/export_agent_plugin.mjs",
     "check:agent-plugin": "node scripts/export_agent_plugin.mjs --check && node scripts/check_agent_plugin.mjs",
     "test:e2e:agent": "cargo test --manifest-path src-tauri/Cargo.toml",
     "e2e:up": "npm --prefix ../dartsnut-community-api run e2e:up",
     "e2e:down": "npm --prefix ../dartsnut-community-api run e2e:down",
-    "test:e2e": "npm --prefix ../dartsnut-community-api run test:e2e && pnpm run test:e2e:agent"
+    "test:e2e": "npm --prefix ../dartsnut-community-api run test:e2e && pnpm run test:e2e:agent",
+    "build:editor": "node scripts/build-editor-bundle.mjs",
+    "check:editor": "node scripts/build-editor-bundle.mjs --check",
+    "test:editor-bundle": "node --test scripts/build-editor-bundle.test.mjs"
   },
   "dependencies": {
     "@dartsnut/desktop-contracts": "workspace:*",
