@@ -17,6 +17,7 @@ pub mod provider;
 pub mod proxy;
 pub mod rig_runtime;
 pub mod runtime;
+pub mod scratch;
 pub mod updates;
 pub mod workspace;
 
