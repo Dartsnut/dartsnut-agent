@@ -146,6 +146,7 @@ export function createTauriClient() {
     openStartupLogs: () => invoke<void>("open_startup_logs"),
     openWorkspaceFolder: (projectId: string) => invoke<void>("open_workspace_folder", projectId),
     readScratchProject: () => invoke<ScratchProjectFileResult>("read_scratch_project"),
+    saveScratchProject: (payload: { bytesBase64: string }) => invoke<{ ok: boolean; fileName?: string; reason?: string; message?: string }>("save_scratch_project", payload),
     copyStartupDiagnostics: () => invoke<void>("copy_startup_diagnostics"),
     resetRendererState: () => invoke<void>("reset_renderer_state"),
     restartApp: () => invoke<void>("restart_app"),

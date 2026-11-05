@@ -32,8 +32,20 @@ const toBytes = async blob => {
     return new Uint8Array(buffer);
 };
 
+// Autosave: a change is written shortly after the user stops making it. Long
+// enough that dragging a block does not serialise the whole project per frame,
+// short enough that closing the window does not lose the last edit.
+const AUTOSAVE_DEBOUNCE_MS = 1000;
+
 const appTarget = document.createElement('div');
 appTarget.className = 'dartsnut-app';
+
+// Holding the project during load would be indistinguishable from an edit, so
+// autosave is suppressed until the load settles. Otherwise opening a project
+// schedules a write of the bytes that were just read.
+let loading = false;
+let autosaveTimer = null;
+let dirty = false;
 document.body.appendChild(appTarget);
 
 // `onVmInit` is a documented GUI prop: containers/gui.jsx calls it on mount with
@@ -43,7 +55,31 @@ let vm = null;
 
 const onVmInit = initializedVm => {
     vm = initializedVm;
+    // The VM's own change signal is the only reliable one: watching the redux
+    // store would miss block and costume edits made inside the VM.
+    vm.runtime.on('PROJECT_CHANGED', () => {
+        if (loading) return;
+        dirty = true;
+        scheduleAutosave();
+    });
     post({kind: 'editor-ready'});
+};
+
+const scheduleAutosave = () => {
+    if (autosaveTimer) clearTimeout(autosaveTimer);
+    autosaveTimer = setTimeout(() => {
+        autosaveTimer = null;
+        saveProject();
+    }, AUTOSAVE_DEBOUNCE_MS);
+};
+
+/** Emit immediately, cancelling a pending autosave: used on flush. */
+const flushAutosave = () => {
+    if (autosaveTimer) {
+        clearTimeout(autosaveTimer);
+        autosaveTimer = null;
+    }
+    if (dirty) saveProject();
 };
 
 const loadProject = async (message) => {
@@ -51,10 +87,14 @@ const loadProject = async (message) => {
         post({kind: 'editor-error', reason: 'bridge-failed', detail: 'the VM is not ready'});
         return;
     }
+    loading = true;
+    dirty = false;
     try {
         await vm.loadProject(message.bytes);
+        loading = false;
         post({kind: 'project-loaded', project: message.project});
     } catch (error) {
+        loading = false;
         post({
             kind: 'editor-error',
             reason: 'project-load-failed',
@@ -67,6 +107,7 @@ const saveProject = async () => {
     if (!vm) return;
     try {
         const bytes = await toBytes(await vm.saveProjectSb3());
+        dirty = false;
         // Project identity is echoed from the last load: the host owns identity,
         // and the editor must not invent one for a save it cannot attribute.
         post({kind: 'save-project', project: lastIdentity, bytes}, [bytes.buffer]);
@@ -104,7 +145,13 @@ window.addEventListener('message', event => {
         return;
     }
     if (data.kind === 'request-save') {
-        saveProject();
+        // The host flushes on project switch and on close; a debounced write that
+        // never fires would lose the last edit.
+        flushAutosave();
+        return;
+    }
+    if (data.kind === 'flush') {
+        flushAutosave();
     }
 });
 

@@ -157,8 +157,19 @@ export type ScratchEditorErrorReason =
   /** The bridge reported a fault it has no more specific reason for. */
   | "bridge-failed";
 
+/**
+ * Host → editor. Write now: any pending debounced save must not be dropped when
+ * the project is switched away from or the window closes.
+ */
+export interface ScratchEditorFlushMessage {
+  channel: typeof BRIDGE_CHANNEL;
+  version: typeof BRIDGE_PROTOCOL_VERSION;
+  kind: "flush";
+}
+
 export type ScratchEditorHostMessage =
   | ScratchEditorHelloMessage
+  | ScratchEditorFlushMessage
   | ScratchEditorLoadProjectMessage;
 
 export type ScratchEditorEditorMessage =
