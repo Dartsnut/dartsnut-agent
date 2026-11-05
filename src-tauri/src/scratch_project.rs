@@ -47,7 +47,8 @@ fn resolve_project(root: &Path) -> Result<(String, std::path::PathBuf), (String,
     };
     // The guard is what makes this command safe: a `.sb3` that is a symlink
     // pointing outside the workspace is rejected rather than read.
-    let guard = WorkspaceRoot::open(root).map_err(|error| ("outside_workspace".to_owned(), error.to_string()))?;
+    let guard = WorkspaceRoot::open(root)
+        .map_err(|error| ("outside_workspace".to_owned(), error.to_string()))?;
     let absolute = guard
         .resolve(&relative)
         .map_err(|error| ("outside_workspace".to_owned(), error.to_string()))?;
