@@ -122,6 +122,50 @@ const saveProject = async () => {
 
 let lastIdentity = {projectId: '', fileName: ''};
 
+// The device's dart contract, restated here because the iframe cannot import the
+// host's TypeScript. The firmware's runner is the source of truth: it sets these
+// three stage variables and then broadcasts.
+const DART_VARIABLES = ['dart_x', 'dart_y', 'dart_index'];
+const DART_BROADCAST = 'dart';
+
+/** Write a stage variable, but only if the project declares one. */
+const setStageVariable = (name, value) => {
+    if (!vm) return;
+    const stage = vm.runtime.getTargetForStage();
+    if (!stage || !stage.variables) return;
+    const variable = stage.variables[name];
+    if (variable) variable.value = value;
+};
+
+/** A dart landed. Mirrors the runner: variables, then broadcast. */
+const handleDart = message => {
+    if (!vm) return;
+    setStageVariable('dart_x', message.x);
+    setStageVariable('dart_y', message.y);
+    setStageVariable('dart_index', message.index);
+    vm.runtime.startHats('event_whenbroadcastreceived', {BROADCAST_OPTION: DART_BROADCAST});
+};
+
+// Held so a repeat down does not re-fire the hat every frame, exactly as the
+// runner tracks held buttons.
+const heldKeys = new Set();
+
+/** A face button changed state. Mirrors the runner's key handling. */
+const handleKey = message => {
+    if (!vm) return;
+    const key = message.code;
+    if (message.pressed) {
+        if (heldKeys.has(key)) return;
+        heldKeys.add(key);
+        vm.postIOData('keyboard', {key, isDown: true});
+        vm.runtime.startHats('event_whenkeypressed', {KEY_OPTION: key});
+        return;
+    }
+    if (!heldKeys.has(key)) return;
+    heldKeys.delete(key);
+    vm.postIOData('keyboard', {key, isDown: false});
+};
+
 window.addEventListener('message', event => {
     const data = event.data;
     if (!data || data.channel !== CHANNEL) return;
@@ -152,6 +196,14 @@ window.addEventListener('message', event => {
     }
     if (data.kind === 'flush') {
         flushAutosave();
+        return;
+    }
+    if (data.kind === 'dart') {
+        handleDart(data);
+        return;
+    }
+    if (data.kind === 'key') {
+        handleKey(data);
     }
 });
 

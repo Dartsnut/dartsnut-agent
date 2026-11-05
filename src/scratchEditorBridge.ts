@@ -8,6 +8,7 @@ import {
   type ScratchProjectIdentity
 } from "@dartsnut/desktop-contracts";
 import { SCRATCH_EDITOR_BUNDLE_URL } from "./editorBundleUrl";
+import { panelToScratch } from "./scratchInput";
 
 /**
  * Host side of the editor bridge.
@@ -132,6 +133,38 @@ export function loadProjectMessage(
     kind: "load-project",
     project: identity,
     bytes
+  };
+}
+
+/**
+ * A dart throw, already mapped into stage coordinates, or `null` when the hit
+ * fell in the letterbox band and must be dropped.
+ */
+export function dartMessage(
+  index: number,
+  px: number,
+  py: number
+): ScratchEditorHostMessage | null {
+  const mapped = panelToScratch(px, py);
+  if (!mapped) return null;
+  return {
+    channel: BRIDGE_CHANNEL,
+    version: BRIDGE_PROTOCOL_VERSION,
+    kind: "dart",
+    index,
+    x: mapped.x,
+    y: mapped.y
+  };
+}
+
+/** A face-button change in the key name the editor's key hat reports. */
+export function keyMessage(code: string, pressed: boolean): ScratchEditorHostMessage {
+  return {
+    channel: BRIDGE_CHANNEL,
+    version: BRIDGE_PROTOCOL_VERSION,
+    kind: "key",
+    code,
+    pressed
   };
 }
 

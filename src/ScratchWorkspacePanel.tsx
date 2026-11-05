@@ -4,10 +4,14 @@ import {
   BRIDGE_PROTOCOL_VERSION,
   type ScratchProjectFileResult
 } from "@dartsnut/desktop-contracts";
+import { ScratchControls } from "./ScratchControls";
+import { buttonKey, scratchKeyFor } from "./scratchInput";
 import {
   attachScratchEditorBridge,
   decodeProjectBytes,
   encodeProjectBytes,
+  dartMessage,
+  keyMessage,
   loadProjectMessage,
   scratchEditorUrl,
   type ScratchEditorPhase
@@ -64,6 +68,8 @@ export function ScratchWorkspacePanel({ projectId, readProject, saveProject }: S
   const [error, setError] = useState<PanelError | null>(null);
   const [attempt, setAttempt] = useState(0);
   const [autosave, setAutosave] = useState<AutosaveState>(initialAutosaveState);
+  const [dartIndex, setDartIndex] = useState(1);
+  const [thrown, setThrown] = useState(0);
 
   const load = useCallback(async () => {
     const result = await readProject();
@@ -215,6 +221,64 @@ export function ScratchWorkspacePanel({ projectId, readProject, saveProject }: S
         sandbox="allow-scripts allow-same-origin allow-popups allow-forms allow-modals"
         style={{ display: failed ? "none" : undefined }}
       />
+      {/* Keyboard forwarding: a kid tests with the laptop's own keys, so space
+          and the arrows drive the same hats the face buttons do. Only while the
+          editor has focus — otherwise typing anywhere in the app would jump a
+          sprite. */}
+      {!failed ? (
+        <div
+          className="scratch-workspace-panel__keyboard-capture"
+          tabIndex={0}
+          onKeyDown={(event) => {
+            const code = scratchKeyFor(event.key);
+            if (!code) return;
+            // The editor owns the key here: a key that both jumped a sprite and
+            // triggered an app shortcut is a bug you chase for a day.
+            event.stopPropagation();
+            event.preventDefault();
+            const post = postRef.current;
+            if (post) post(keyMessage(code, true));
+          }}
+          onKeyUp={(event) => {
+            const code = scratchKeyFor(event.key);
+            if (!code) return;
+            event.stopPropagation();
+            const post = postRef.current;
+            if (post) post(keyMessage(code, false));
+          }}
+          aria-label="Keyboard input for the project"
+        />
+      ) : null}
+      {/* The device's physical inputs, so a game can be exercised on a laptop
+          before it ever reaches hardware. */}
+      {!failed ? (
+        <ScratchControls
+          dartIndex={dartIndex}
+          onDartIndexChange={setDartIndex}
+          dartCount={thrown}
+          onClearDarts={() => {
+            // Clearing is host bookkeeping: darts live in the device's slots,
+            // which the preview does not model, so the count is all there is to
+            // reset. A project resets its own visuals from its own scripts.
+            setThrown(0);
+          }}
+          onDart={(index, px, py) => {
+            const post = postRef.current;
+            if (!post) return;
+            const message = dartMessage(index, px, py);
+            // A hit in the letterbox band maps to nothing and is dropped rather
+            // than clamped, exactly as the device does.
+            if (!message) return;
+            post(message);
+            setThrown((count) => count + 1);
+          }}
+          onKey={(code, pressed) => {
+            const post = postRef.current;
+            if (!post) return;
+            post(keyMessage(code, pressed));
+          }}
+        />
+      ) : null}
     </section>
   );
 }
