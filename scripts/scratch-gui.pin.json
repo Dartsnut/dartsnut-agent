@@ -6,7 +6,12 @@
   "commit": "22a846f30a4340dc929fb27a92afda650f4ca1fc",
   "lockfile": "package-lock.json",
   "lockfileSha256": "bb15241c98d41c23b18676ccc91fc6cca1f17833de3d464657c7454f098c177a",
-  "entrypoint": "index.html",
+  "entrypoint": "dartsnut.html",
   "output": "public/editor",
-  "url": "/editor/index.html"
+  "url": "/editor/dartsnut.html",
+  "bridge": {
+    "entrypoint": "dartsnut-gui.jsx",
+    "config": "dartsnut.webpack.config.js",
+    "sourceDir": "scripts/scratch-gui-patches"
+  }
 }
