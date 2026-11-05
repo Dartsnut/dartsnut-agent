@@ -1,6 +1,7 @@
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 import { listen as tauriListen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
+  ScratchProjectFileResult,
   AgentEvent,
   AgentSessionWorkspaceSummary,
   AppUpdateInstallResponse,
@@ -144,6 +145,7 @@ export function createTauriClient() {
     reportRendererError: (payload: RendererErrorPayload) => invoke<void>("report_renderer_error", payload),
     openStartupLogs: () => invoke<void>("open_startup_logs"),
     openWorkspaceFolder: (projectId: string) => invoke<void>("open_workspace_folder", projectId),
+    readScratchProject: () => invoke<ScratchProjectFileResult>("read_scratch_project"),
     copyStartupDiagnostics: () => invoke<void>("copy_startup_diagnostics"),
     resetRendererState: () => invoke<void>("reset_renderer_state"),
     restartApp: () => invoke<void>("restart_app"),

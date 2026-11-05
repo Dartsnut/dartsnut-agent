@@ -4,6 +4,7 @@ import {
   resolveWorkspaceSurface,
   shouldShowEmulatorPane,
   shouldShowPersonaPicker,
+  shouldUseFullBodyWidth,
   workspaceProjectKind,
 } from "./workspaceSurface";
 
@@ -19,9 +20,17 @@ describe("workspace surface decisions", () => {
     expect(workspaceProjectKind(undefined)).toBeNull();
   });
 
-  it("routes a Scratch workspace away from the chat surface", () => {
-    expect(resolveWorkspaceSurface(scratch)).toBe("scratch-notice");
+  it("routes a Scratch workspace to the editor and everything else to chat", () => {
+    expect(resolveWorkspaceSurface(scratch)).toBe("scratch-editor");
     expect(resolveWorkspaceSurface(python)).toBe("chat");
+    expect(resolveWorkspaceSurface({ projectKind: null })).toBe("none");
+    expect(resolveWorkspaceSurface(null)).toBe("none");
+  });
+
+  it("gives the editor the full body width and the chat rail no more than its column", () => {
+    expect(shouldUseFullBodyWidth(scratch)).toBe(true);
+    expect(shouldUseFullBodyWidth(python)).toBe(false);
+    expect(shouldUseFullBodyWidth(null)).toBe(false);
   });
 
   it("shows no workspace surface before a workspace is selected", () => {
