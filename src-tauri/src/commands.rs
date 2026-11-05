@@ -260,7 +260,12 @@ pub async fn create_project(
         return Ok(json!({ "ok": false, "error": "folderPath is required" }));
     }
     let name = payload.get("name").and_then(Value::as_str);
-    let refused = refuse_scratch_at_open(Path::new(folder));
+    // Refused before the store is touched. Checking after `ensure_project` would
+    // leave a project the device will refuse sitting in the project list, which
+    // reads as "opened" to anyone who looks at the sidebar.
+    if let Some(refusal) = refuse_scratch_at_open(Path::new(folder)) {
+        return Ok(json!({ "ok": false, "error": refusal }));
+    }
     let created = {
         let Some(mut store_guard) = store_for(&app, &state) else {
             return Ok(json!({ "ok": false, "error": "project store unavailable" }));
@@ -288,9 +293,6 @@ pub async fn create_project(
             Err(error) => Err(error.to_string()),
         }
     };
-    if let Some(refusal) = refused {
-        return Ok(json!({ "ok": false, "error": refusal }));
-    }
     let (tree, project_id, chat_id, folder_path) = match created {
         Ok(value) => value,
         Err(error) => return Ok(json!({ "ok": false, "error": error })),

@@ -167,3 +167,18 @@ export function padClickToPanel(
   if (px < 0 || py < 0 || px > PLAY.width || py > PLAY.height) return null;
   return { px, py };
 }
+
+/**
+ * A dart the preview has thrown.
+ *
+ * The device keeps darts in physical slots; the preview has no slots, so it
+ * tracks what was thrown in order to remove one at a time. Each carries a
+ * locally unique id because two throws can share an index once a dart is
+ * re-armed.
+ */
+export interface ThrownDart {
+  id: string;
+  index: number;
+  x: number;
+  y: number;
+}

@@ -3,7 +3,8 @@ import {
   DART_COUNT,
   buttonKey,
   padClickToPanel,
-  type FaceButton
+  type FaceButton,
+  type ThrownDart
 } from "./scratchInput";
 
 export interface ScratchControlsProps {
@@ -14,8 +15,9 @@ export interface ScratchControlsProps {
   /** The dart the next throw is attributed to. */
   dartIndex: number;
   onDartIndexChange: (index: number) => void;
-  /** Darts already thrown, so they can be cleared. */
-  dartCount: number;
+  /** Darts already thrown, so each can be removed or cleared together. */
+  thrownDarts: readonly ThrownDart[];
+  onRemoveDart: (dart: ThrownDart) => void;
   onClearDarts: () => void;
 }
 
@@ -40,7 +42,8 @@ export function ScratchControls({
   onKey,
   dartIndex,
   onDartIndexChange,
-  dartCount,
+  thrownDarts,
+  onRemoveDart,
   onClearDarts
 }: ScratchControlsProps) {
   return (
@@ -64,10 +67,27 @@ export function ScratchControls({
           type="button"
           className="scratch-controls__clear"
           onClick={onClearDarts}
-          disabled={dartCount === 0}
+          disabled={thrownDarts.length === 0}
         >
-          Clear darts{dartCount > 0 ? ` (${dartCount})` : ""}
+          Clear darts{thrownDarts.length > 0 ? ` (${thrownDarts.length})` : ""}
         </button>
+        {thrownDarts.length > 0 ? (
+          <ul className="scratch-controls__thrown" aria-label="Darts on the stage">
+            {thrownDarts.map((dart) => (
+              <li key={dart.id} className="scratch-controls__thrown-item">
+                <span>#{dart.index}</span>
+                <button
+                  type="button"
+                  className="scratch-controls__remove-dart"
+                  onClick={() => onRemoveDart(dart)}
+                  aria-label={`Remove dart ${dart.index}`}
+                >
+                  Remove
+                </button>
+              </li>
+            ))}
+          </ul>
+        ) : null}
       </div>
       <div className="scratch-controls__pad" role="group" aria-label="Dart pad">
         <span className="scratch-controls__pad-hint">

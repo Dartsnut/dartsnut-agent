@@ -5,7 +5,7 @@ import {
   type ScratchProjectFileResult
 } from "@dartsnut/desktop-contracts";
 import { ScratchControls } from "./ScratchControls";
-import { buttonKey, dartMessage as mapDart, scratchKeyFor } from "./scratchInput";
+import { buttonKey, dartMessage as mapDart, scratchKeyFor, type ThrownDart } from "./scratchInput";
 import {
   attachScratchEditorBridge,
   dartMessage,
@@ -85,7 +85,7 @@ export function ScratchWorkspacePanel({
   const [attempt, setAttempt] = useState(0);
   const [autosave, setAutosave] = useState<AutosaveState>(initialAutosaveState);
   const [dartIndex, setDartIndex] = useState(1);
-  const [thrown, setThrown] = useState(0);
+  const [thrown, setThrown] = useState<ThrownDart[]>([]);
 
   // The host passes these as inline arrows, so they are new identities on every
   // render. Reading them through refs keeps the bridge effect stable: keyed on
@@ -322,13 +322,14 @@ export function ScratchWorkspacePanel({
         <ScratchControls
           dartIndex={dartIndex}
           onDartIndexChange={setDartIndex}
-          dartCount={thrown}
-          onClearDarts={() => {
-            // Clearing is host bookkeeping: darts live in the device's slots,
-            // which the preview does not model, so the count is all there is to
-            // reset. A project resets its own visuals from its own scripts.
-            setThrown(0);
+          thrownDarts={thrown}
+          onRemoveDart={(dart) => {
+            // Host bookkeeping only: the device keeps darts in physical slots
+            // and re-arms them, which the preview does not model. A project
+            // resets its own visuals from its own scripts.
+            setThrown((current) => current.filter((item) => item.id !== dart.id));
           }}
+          onClearDarts={() => setThrown([])}
           onDart={(index, px, py) => {
             const post = postRef.current;
             if (!post) return;
@@ -337,11 +338,11 @@ export function ScratchWorkspacePanel({
             const mapped = mapDart(index, px, py);
             if (!mapped) return;
             const message = dartMessage(mapped.index, mapped.x, mapped.y);
-            // A hit in the letterbox band maps to nothing and is dropped rather
-            // than clamped, exactly as the device does.
-            if (!message) return;
             post(message);
-            setThrown((count) => count + 1);
+            setThrown((current) => [
+              ...current,
+              { id: `${mapped.index}-${Date.now()}-${current.length}`, index: mapped.index, x: mapped.x, y: mapped.y }
+            ]);
           }}
           onKey={(code, pressed) => {
             const post = postRef.current;
