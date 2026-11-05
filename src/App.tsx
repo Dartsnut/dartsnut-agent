@@ -108,6 +108,8 @@ import {
 } from "./DeployAuthGate";
 import { DeployPanel } from "./DeployPanel";
 import { EmulatorPanel } from "./EmulatorPanel";
+import { ScratchWorkspacePanel } from "./ScratchWorkspacePanel";
+import { resolveWorkspaceSurface } from "./workspaceSurface";
 import { MyGamesPanel } from "./MyGamesPanel";
 import {
   agentEventTimelineRole,
@@ -1184,7 +1186,12 @@ export function App() {
   // stricter gate and its toggle explains the block instead of hiding.
   const hasSelectedWorkspace = Boolean(bootstrap?.workspaceRoot);
   const showRuntimeSetup = pythonRuntimeProgress.running || Boolean(pythonRuntimeProgress.error);
-  const showEmulatorPane = screen === "main" && hasSelectedWorkspace && !showRuntimeSetup;
+  // A Scratch project shows the block editor in place of the chat rail and the
+  // emulator: one VM, one render, and the editor stage is the surface the user
+  // trusts. Deploy keeps its own gate and is unaffected.
+  const workspaceSurface = resolveWorkspaceSurface(bootstrap);
+  const showScratchEditor = screen === "main" && workspaceSurface === "scratch-editor" && !showRuntimeSetup;
+  const showEmulatorPane = screen === "main" && hasSelectedWorkspace && !showRuntimeSetup && !showScratchEditor;
   const showDeployDrawer = screen === "main" && validProject && !showRuntimeSetup;
   const showDeployToggle = screen === "main" && hasSelectedWorkspace && !showRuntimeSetup;
   const [widgetConfigs, setWidgetConfigs] = useState<Record<WidgetConfigScope, WidgetConfigSnapshot>>(EMPTY_WIDGET_CONFIGS);
@@ -3409,6 +3416,13 @@ export function App() {
               ) : null}
             </div>
           </div>
+        </section>
+      ) : showScratchEditor ? (
+        <section className="scratch-workspace-main col-span-full min-h-0 h-full overflow-hidden bg-[var(--gradient-rail)]">
+          <ScratchWorkspacePanel
+            projectId={bootstrap?.activeProjectId ?? null}
+            readProject={() => api.readScratchProject()}
+          />
         </section>
       ) : screen === "main" ? (
         <section

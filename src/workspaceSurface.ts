@@ -3,13 +3,12 @@ import type { BootstrapState, ProjectKind } from "@dartsnut/desktop-contracts";
 /**
  * Which surface a workspace calls for, decided from the backend's project kind.
  *
- * A Scratch project has no chat: no composer, no persona, no agent. Until the
- * block editor lands (#18) the app says so plainly rather than showing an agent
- * timeline that cannot act on the project — that placeholder is the
- * `scratch-notice` surface, and it is intentionally the only Scratch surface
- * this module can name today.
+ * A Scratch project has no chat: no composer, no persona, no agent. It shows the
+ * block editor instead, at full body width — the chat rail's narrower column
+ * clips the sprite and costume panes at the app's minimum window size, and a
+ * Scratch editor that scrolls sideways is worse than none.
  */
-export type WorkspaceSurface = "scratch-notice" | "chat" | "none";
+export type WorkspaceSurface = "scratch-editor" | "chat" | "none";
 
 type ProjectKindSource = Pick<BootstrapState, "projectKind">;
 
@@ -32,7 +31,17 @@ export function resolveWorkspaceSurface(
 ): WorkspaceSurface {
   const kind = workspaceProjectKind(bootstrap);
   if (kind === null) return "none";
-  return kind === "scratch" ? "scratch-notice" : "chat";
+  return kind === "scratch" ? "scratch-editor" : "chat";
+}
+
+/**
+ * The editor owns the whole body for a Scratch project, so the chat rail's column
+ * constraint must not apply to it.
+ */
+export function shouldUseFullBodyWidth(
+  bootstrap: ProjectKindSource | null | undefined,
+): boolean {
+  return isScratchWorkspace(bootstrap);
 }
 
 /** No chat exists for a Scratch project, so no persona can be offered for one. */

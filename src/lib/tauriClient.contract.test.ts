@@ -13,7 +13,7 @@ describe("Tauri client command contract", () => {
   it("exposes every frontend operation from desktop contracts", () => {
     const api = createTauriClient();
     const expectedTopLevel = [
-      "rendererReady", "reportRendererError", "openStartupLogs", "openWorkspaceFolder", "copyStartupDiagnostics",
+      "rendererReady", "reportRendererError", "openStartupLogs", "openWorkspaceFolder", "readScratchProject", "copyStartupDiagnostics",
       "resetRendererState", "restartApp", "getBootstrapState", "getWorkspaceSessionSummary",
       "resetWorkspaceSession", "listProjects", "createProject", "removeProject", "selectProject",
       "createChat", "archiveChat", "generateChatTitle", "selectChat", "onProjectSwitchProgress",
