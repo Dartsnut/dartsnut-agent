@@ -2736,10 +2736,8 @@ mod tests {
     /// the app and still decides the panel.
     #[test]
     fn python_deploy_target_still_comes_from_conf_json() {
-        let root = std::env::temp_dir().join(format!(
-            "dartsnut-deploy-python-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("dartsnut-deploy-python-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("main.py"), b"print('ok')\n").unwrap();
         let widget = deploy_target(&root, &json!({"appId":"clock","size":[64,32]}));
