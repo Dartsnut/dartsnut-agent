@@ -167,10 +167,17 @@ export interface ScratchEditorFlushMessage {
   kind: "flush";
 }
 
+/**
+ * Host → editor. Dart and key messages travel this way too: the host owns the
+ * device inputs, so the control strip's presses are sent into the editor rather
+ * than the editor reaching out for them.
+ */
 export type ScratchEditorHostMessage =
   | ScratchEditorHelloMessage
   | ScratchEditorFlushMessage
-  | ScratchEditorLoadProjectMessage;
+  | ScratchEditorLoadProjectMessage
+  | ScratchEditorDartMessage
+  | ScratchEditorKeyMessage;
 
 export type ScratchEditorEditorMessage =
   | ScratchEditorReadyMessage
