@@ -10,7 +10,8 @@ import type { DeployEligibilityReason } from "@dartsnut/desktop-contracts";
  *
  * `fix` is written for the human reading the panel. `fixPrompt` is written for
  * the agent, as an imperative clause: `workspaceFixPrompt` stitches the
- * applicable clauses into one request.
+ * applicable clauses into one request. The `scratch_*` codes carry no
+ * `fixPrompt` on purpose — a Scratch project has no chat to repair it in.
  */
 
 /** Every eligibility reason *except* "no workspace selected" — that state shows no panel. */
@@ -23,8 +24,13 @@ export interface WorkspaceFaultCopy {
   detail: string;
   /** One line, the concrete fix. Shown in the expandable detail area. */
   fix: string;
-  /** Imperative clause handed to the agent when the user asks it to fix the fault. */
-  fixPrompt: string;
+  /**
+   * Imperative clause handed to the agent when the user asks it to fix the fault.
+   * Absent for Scratch faults: a Scratch project has no chat, so there is no
+   * agent to hand a prompt to, and offering one would point at a surface that
+   * does not exist for this project kind.
+   */
+  fixPrompt?: string;
 }
 
 export const WORKSPACE_FAULT_COPY: Record<WorkspaceFaultReason, WorkspaceFaultCopy> = {
@@ -95,6 +101,21 @@ export const WORKSPACE_FAULT_COPY: Record<WorkspaceFaultReason, WorkspaceFaultCo
     fix: "Rename entry point to main.py",
     fixPrompt: "create or rename the entry point to main.py at the workspace root",
   },
+  scratch_multiple_projects: {
+    title: "Two Scratch projects",
+    detail: "The folder has more than one .sb3 at its root, so which project to open is ambiguous",
+    fix: "Keep a single .sb3 at the folder root and move the others into subfolders",
+  },
+  scratch_ambiguous_with_python: {
+    title: "Scratch file beside a Python project",
+    detail: "The folder has both an .sb3 and a pyproject.toml, and the device would refuse that",
+    fix: "Move the .sb3 into its own folder, or remove pyproject.toml",
+  },
+  scratch_unparseable: {
+    title: "Scratch project will not open",
+    detail: "The .sb3 could not be read as a zip, or has no project.json with any targets",
+    fix: "Re-export the project from Scratch, or replace the damaged .sb3 file",
+  },
 };
 
 /** Fallback for a reason code the renderer does not know yet. */
@@ -116,11 +137,14 @@ export function workspaceFaultCopy(reason: string): WorkspaceFaultCopy {
 export function workspaceFixPrompt(problems: readonly string[]): string {
   const clauses: string[] = [];
   for (const problem of problems) {
-    const clause = workspaceFaultCopy(problem).fixPrompt.trim().replace(/\.$/, "");
+    const clause = workspaceFaultCopy(problem).fixPrompt?.trim().replace(/\.$/, "") ?? "";
     if (clause && !clauses.includes(clause)) {
       clauses.push(clause);
     }
   }
-  const list = clauses.length > 0 ? clauses.join("; ") : UNKNOWN_WORKSPACE_FAULT_COPY.fixPrompt;
+  const list =
+    clauses.length > 0
+      ? clauses.join("; ")
+      : (UNKNOWN_WORKSPACE_FAULT_COPY.fixPrompt ?? "make the workspace runnable again");
   return `The workspace is not runnable: ${list}. Make the minimum changes needed to leave it runnable, preserve the requested behavior and unrelated files, then finish.`;
 }

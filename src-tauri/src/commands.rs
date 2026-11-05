@@ -63,6 +63,10 @@ pub struct AppState {
     pub(crate) provider_settings: Mutex<ProviderSettingsFile>,
     /// Prevents window-close and app-exit paths from racing cleanup.
     pub quit_cleanup_started: AtomicBool,
+    /// Answered by the renderer during quit. A pending editor save is written
+    /// before the webview is destroyed; the close path waits on this briefly so
+    /// an edit inside the autosave window is not lost.
+    pub quit_flush: tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
 }
 
 pub struct PendingUpdate {
@@ -99,6 +103,7 @@ impl Default for AppState {
             }),
             provider_settings: Mutex::new(ProviderSettingsFile::default()),
             quit_cleanup_started: AtomicBool::new(false),
+            quit_flush: tokio::sync::Mutex::new(None),
         }
     }
 }
@@ -121,6 +126,10 @@ pub struct BootstrapState {
     pub active_chat_id: Option<String>,
     pub provider_status: String,
     pub first_run_complete: bool,
+    /// Computed here, never inferred by the renderer: a Scratch workspace has no
+    /// chat, no persona picker, and no agent tools, and a flash of the wrong
+    /// surface on open is exactly what a renderer-side guess would cost.
+    pub project_kind: Option<&'static str>,
 }
 
 #[tauri::command]
@@ -155,13 +164,14 @@ pub(crate) fn bootstrap_state(state: &AppState) -> BootstrapState {
     } else {
         "ready"
     };
+    let workspace_root = state
+        .workspace_root
+        .lock()
+        .ok()
+        .and_then(|value| value.clone());
     BootstrapState {
-        workspace_root: state
-            .workspace_root
-            .lock()
-            .ok()
-            .and_then(|value| value.clone())
-            .map(|p| p.to_string_lossy().into_owned()),
+        project_kind: crate::scratch::project_kind(workspace_root.as_deref()),
+        workspace_root: workspace_root.map(|p| p.to_string_lossy().into_owned()),
         active_project_id,
         active_chat_id,
         provider_status: provider_status.to_owned(),
@@ -218,6 +228,24 @@ fn tree_value(store: &ProjectStore) -> Value {
     json!({ "projects": projects, "chats": chats })
 }
 
+/// The renderer has finished its quit-time work.
+///
+/// The close path emits a flush request and waits on this before destroying the
+/// webview. Answering is best effort: if the renderer has nothing pending it
+/// still acks, so quitting is never held for the full timeout.
+#[tauri::command]
+pub async fn scratch_flush_ack(state: State<'_, AppState>) -> Result<(), String> {
+    let sender = state
+        .quit_flush
+        .lock()
+        .await
+        .take();
+    if let Some(sender) = sender {
+        let _ = sender.send(());
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn create_project(
     app: AppHandle,
@@ -232,6 +260,12 @@ pub async fn create_project(
         return Ok(json!({ "ok": false, "error": "folderPath is required" }));
     }
     let name = payload.get("name").and_then(Value::as_str);
+    // Refused before the store is touched. Checking after `ensure_project` would
+    // leave a project the device will refuse sitting in the project list, which
+    // reads as "opened" to anyone who looks at the sidebar.
+    if let Some(refusal) = refuse_scratch_at_open(Path::new(folder)) {
+        return Ok(json!({ "ok": false, "error": refusal }));
+    }
     let created = {
         let Some(mut store_guard) = store_for(&app, &state) else {
             return Ok(json!({ "ok": false, "error": "project store unavailable" }));
@@ -241,7 +275,14 @@ pub async fn create_project(
         };
         match store.ensure_project(folder, name) {
             Ok(project) => {
-                let chat = store.create_chat(&project.id, None).ok();
+                // A Scratch project gets no chat: nothing here can write to one,
+                // and a permanently empty conversation is a trap for the next
+                // reader of the project store.
+                let chat = if crate::scratch::is_scratch_at(&project.folder_path) {
+                    None
+                } else {
+                    store.create_chat(&project.id, None).ok()
+                };
                 Ok((
                     tree_value(store),
                     project.id.clone(),
@@ -369,6 +410,17 @@ pub async fn select_project(
         };
         (tree_value(store), selection)
     };
+    if let Some((_, _, folder_path)) = selection.as_ref() {
+        if let Some(refusal) = refuse_scratch_at_open(Path::new(folder_path)) {
+            return Ok(json!({
+                "state": bootstrap_state(&state),
+                "tree": tree,
+                "accepted": false,
+                "reason": crate::scratch::open_refusal_reason(Path::new(folder_path)),
+                "error": refusal,
+            }));
+        }
+    }
     let Some((project_id, chat_id, folder_path)) = selection else {
         if let Err(error) = prepare_deploy_workspace_transition(&app, &state, None).await {
             return Ok(
@@ -635,7 +687,8 @@ pub(crate) fn eligibility_for_root(root: Option<&Path>) -> Value {
     };
     let pyproject = fs::read_to_string(root.join("pyproject.toml")).ok();
     let conf = fs::read_to_string(root.join("conf.json")).ok();
-    classify_dartsnut_project_files(pyproject.as_deref(), conf.as_deref())
+    let scratch = crate::scratch::scan_workspace(root);
+    classify_dartsnut_project_files(pyproject.as_deref(), conf.as_deref(), &scratch)
 }
 
 pub(crate) fn workspace_runnable(root: Option<&Path>) -> Value {
@@ -646,10 +699,32 @@ pub(crate) fn workspace_runnable(root: Option<&Path>) -> Value {
     let Some(root) = root else {
         return status;
     };
+    // A Scratch workspace has no `main.py` until the firmware writes its launch
+    // scaffolding at install; asking for one would recreate the fault this
+    // project kind exists to end.
+    if status.get("projectType").and_then(Value::as_str) == Some("scratch") {
+        return status;
+    }
     if !root.join("main.py").is_file() {
         return json!({"ok":false,"reason":"missing_main_py"});
     }
     status
+}
+
+/// The plain-words refusal for a folder presenting a Scratch payload the device
+/// would reject at install.
+///
+/// Refusing at open is deliberate: a folder with two `.sb3`, or an `.sb3` beside
+/// a `pyproject.toml`, is not a project the app can pick a kind for, and the
+/// device's own installer would refuse it minutes later.
+fn refuse_scratch_at_open(root: &Path) -> Option<String> {
+    match crate::scratch::scan_workspace(root) {
+        crate::scratch::ScratchWorkspace::Refused { reason, .. } => {
+            Some(crate::scratch::refusal_message(reason).to_owned())
+        }
+        crate::scratch::ScratchWorkspace::Project { .. }
+        | crate::scratch::ScratchWorkspace::Absent => None,
+    }
 }
 
 pub(crate) fn attach_workspace_status(root: &Path, mut value: Value) -> Value {
@@ -660,7 +735,6 @@ pub(crate) fn attach_workspace_status(root: &Path, mut value: Value) -> Value {
     }
     value
 }
-
 
 #[tauri::command]
 pub fn deploy_get_eligibility(state: State<'_, AppState>) -> Value {
@@ -675,7 +749,25 @@ pub fn deploy_get_eligibility(state: State<'_, AppState>) -> Value {
 fn classify_dartsnut_project_files(
     pyproject_text: Option<&str>,
     conf_json_text: Option<&str>,
+    scratch: &crate::scratch::ScratchWorkspace,
 ) -> Value {
+    // Scratch runs first: a folder presenting an `.sb3` is answering a different
+    // question than "where is pyproject.toml", and refusing it here is what turns
+    // a device-side install failure into an open-time message.
+    match scratch {
+        crate::scratch::ScratchWorkspace::Project { app_id, .. } => {
+            return json!({
+                "ok": true,
+                "appId": app_id,
+                "version": SCRATCH_VERSION,
+                "projectType": "scratch",
+            });
+        }
+        crate::scratch::ScratchWorkspace::Refused { reason, problems } => {
+            return ineligible_with_owned(reason, problems);
+        }
+        crate::scratch::ScratchWorkspace::Absent => {}
+    }
     let Some(pyproject_text) = pyproject_text else {
         return ineligible(&["missing_pyproject"]);
     };
@@ -739,8 +831,16 @@ fn classify_dartsnut_project_files(
     json!({"ok":true,"appId":app_id,"version":version,"projectType":"widget"})
 }
 
+/// Scratch projects carry no version of their own; the field stays present so
+/// the eligibility shape does not become a two-variant union.
+const SCRATCH_VERSION: &str = "0.0.0";
+
 fn ineligible(problems: &[&str]) -> Value {
     json!({"ok":false,"reason":problems[0],"problems":problems})
+}
+
+fn ineligible_with_owned(reason: &str, problems: &[&str]) -> Value {
+    json!({"ok":false,"reason":reason,"problems":problems})
 }
 
 fn declares_pydartsnut(dependencies: &[toml::Value]) -> bool {
@@ -885,10 +985,7 @@ pub fn get_app_update_auto_download(app: AppHandle) -> bool {
 }
 
 #[tauri::command]
-pub fn set_app_update_auto_download(
-    app: AppHandle,
-    payload: Option<Value>,
-) -> bool {
+pub fn set_app_update_auto_download(app: AppHandle, payload: Option<Value>) -> bool {
     let enabled = payload
         .as_ref()
         .and_then(|v| v.as_bool())
@@ -915,8 +1012,13 @@ mod tests {
         classify_dartsnut_project_files, eligibility_for_root, widget_config_snapshot,
         workspace_runnable, DeployConnectionState,
     };
+    use crate::scratch::ScratchWorkspace;
+    use serde_json::Value;
     use std::fs;
-    use std::path::Path;
+    use std::io::Write;
+    use std::path::{Path, PathBuf};
+
+    const Absent: ScratchWorkspace = ScratchWorkspace::Absent;
 
     const PYPROJECT: &str = r#"
 [project]
@@ -938,7 +1040,7 @@ dependencies = ["Py_DartsNut[extra] >= 1"]
 
     #[test]
     fn project_without_conf_is_eligible_game() {
-        let result = classify_dartsnut_project_files(Some(PYPROJECT), None);
+        let result = classify_dartsnut_project_files(Some(PYPROJECT), None, &Absent);
         assert_eq!(result["ok"], true);
         assert_eq!(result["appId"], "demo");
         assert_eq!(result["version"], "1.2.3");
@@ -950,6 +1052,7 @@ dependencies = ["Py_DartsNut[extra] >= 1"]
         let result = classify_dartsnut_project_files(
             Some(PYPROJECT),
             Some(r#"{"size":[128,64],"fields":[]}"#),
+            &Absent,
         );
         assert_eq!(result["ok"], true);
         assert_eq!(result["projectType"], "widget");
@@ -960,6 +1063,7 @@ dependencies = ["Py_DartsNut[extra] >= 1"]
         let result = classify_dartsnut_project_files(
             Some(PYPROJECT),
             Some(r#"{"type":"game","size":[128,160],"fields":[]}"#),
+            &Absent,
         );
         assert_eq!(result["ok"], true);
         assert_eq!(result["projectType"], "game");
@@ -969,11 +1073,11 @@ dependencies = ["Py_DartsNut[extra] >= 1"]
     fn invalid_project_metadata_stays_ineligible() {
         let missing_dependency = PYPROJECT.replace("Py_DartsNut[extra] >= 1", "requests");
         assert_eq!(
-            classify_dartsnut_project_files(Some(&missing_dependency), None)["reason"],
+            classify_dartsnut_project_files(Some(&missing_dependency), None, &Absent)["reason"],
             "missing_pydartsnut"
         );
         assert_eq!(
-            classify_dartsnut_project_files(Some(PYPROJECT), Some("{}"))["reason"],
+            classify_dartsnut_project_files(Some(PYPROJECT), Some("{}"), &Absent)["reason"],
             "conf_missing_widget_keys"
         );
     }
@@ -981,17 +1085,18 @@ dependencies = ["Py_DartsNut[extra] >= 1"]
     #[test]
     fn pyproject_failures_report_distinct_reasons() {
         assert_eq!(
-            classify_dartsnut_project_files(Some("[project"), None)["reason"],
+            classify_dartsnut_project_files(Some("[project"), None, &Absent)["reason"],
             "pyproject_unparseable"
         );
         assert_eq!(
-            classify_dartsnut_project_files(Some("name = \"demo\""), None)["reason"],
+            classify_dartsnut_project_files(Some("name = \"demo\""), None, &Absent)["reason"],
             "pyproject_no_project_table"
         );
         assert_eq!(
             classify_dartsnut_project_files(
                 Some("[project]\nname = \"demo\"\nversion = \"1.0.0\"\ndependencies = \"pydartsnut\"\n"),
                 None,
+                &Absent,
             )["reason"],
             "pyproject_bad_dependencies"
         );
@@ -1000,15 +1105,16 @@ dependencies = ["Py_DartsNut[extra] >= 1"]
     #[test]
     fn conf_failures_report_distinct_reasons() {
         assert_eq!(
-            classify_dartsnut_project_files(Some(PYPROJECT), Some("{not json"))["reason"],
+            classify_dartsnut_project_files(Some(PYPROJECT), Some("{not json"), &Absent)["reason"],
             "conf_unparseable"
         );
         assert_eq!(
-            classify_dartsnut_project_files(Some(PYPROJECT), Some("[]"))["reason"],
+            classify_dartsnut_project_files(Some(PYPROJECT), Some("[]"), &Absent)["reason"],
             "conf_not_object"
         );
         assert_eq!(
-            classify_dartsnut_project_files(Some(PYPROJECT), Some(r#"{"size":[128,64]}"#))["reason"],
+            classify_dartsnut_project_files(Some(PYPROJECT), Some(r#"{"size":[128,64]}"#), &Absent)
+                ["reason"],
             "conf_missing_widget_keys"
         );
     }
@@ -1026,10 +1132,8 @@ dependencies = ["Py_DartsNut[extra] >= 1"]
 
     #[test]
     fn eligibility_follows_workspace_files_on_disk() {
-        let root = std::env::temp_dir().join(format!(
-            "dartsnut-eligibility-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("dartsnut-eligibility-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         assert_eq!(
             eligibility_for_root(Some(&root))["reason"],
@@ -1057,7 +1161,10 @@ dependencies = ["Py_DartsNut[extra] >= 1"]
     fn workspace_runnable_requires_main_py_and_classifies_project() {
         let root = std::env::temp_dir().join(format!("dartsnut-runnable-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
-        assert_eq!(workspace_runnable(Some(&root))["reason"], "missing_pyproject");
+        assert_eq!(
+            workspace_runnable(Some(&root))["reason"],
+            "missing_pyproject"
+        );
         fs::write(root.join("pyproject.toml"), PYPROJECT).unwrap();
         assert_eq!(workspace_runnable(Some(&root))["reason"], "missing_main_py");
         fs::write(root.join("main.py"), "print('ok')\n").unwrap();
@@ -1073,7 +1180,7 @@ dependencies = ["Py_DartsNut[extra] >= 1"]
     fn independent_metadata_problems_are_all_reported() {
         // No name, no version, no pydartsnut: three separate things to fix.
         let broken = "[project]\ndependencies = [\"requests\"]\n";
-        let result = classify_dartsnut_project_files(Some(broken), None);
+        let result = classify_dartsnut_project_files(Some(broken), None, &Absent);
         assert_eq!(result["ok"], false);
         assert_eq!(result["reason"], "missing_project_name");
         let problems: Vec<&str> = result["problems"]
@@ -1084,8 +1191,116 @@ dependencies = ["Py_DartsNut[extra] >= 1"]
             .collect();
         assert_eq!(
             problems,
-            ["missing_project_name", "missing_project_version", "missing_pydartsnut"]
+            [
+                "missing_project_name",
+                "missing_project_version",
+                "missing_pydartsnut"
+            ]
         );
+    }
+
+    /// A real `.sb3` on disk: a zip carrying a `project.json` manifest.
+    fn write_sb3(path: &Path, manifest: &str) {
+        let file = fs::File::create(path).unwrap();
+        let mut writer = zip::ZipWriter::new(file);
+        writer
+            .start_file("project.json", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        writer.write_all(manifest.as_bytes()).unwrap();
+        writer.finish().unwrap();
+    }
+
+    const USABLE_SB3: &str = r#"{"targets":[{"isStage":true,"name":"Stage"}]}"#;
+
+    fn scratch_root(label: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "dartsnut-commands-scratch-{label}-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    fn reasons(value: &Value) -> Vec<String> {
+        value["problems"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|problem| problem.as_str().unwrap().to_owned())
+            .collect()
+    }
+
+    #[test]
+    fn scratch_workspace_is_eligible_and_runnable_without_main_py() {
+        let root = scratch_root("eligible");
+        write_sb3(&root.join("game.sb3"), USABLE_SB3);
+        let eligible = eligibility_for_root(Some(&root));
+        assert_eq!(eligible["ok"], true);
+        assert_eq!(eligible["projectType"], "scratch");
+        assert_eq!(eligible["appId"], "game");
+        // Runnability must not reintroduce the missing_main_py fault this kind ends.
+        let runnable = workspace_runnable(Some(&root));
+        assert_eq!(runnable["ok"], true);
+        assert_eq!(runnable["projectType"], "scratch");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn scratch_refusals_are_named_at_open_through_eligibility() {
+        let cases: [(&str, &str); 3] = [
+            ("multiple_projects", "scratch_multiple_projects"),
+            ("ambiguous_with_python", "scratch_ambiguous_with_python"),
+            ("unparseable", "scratch_unparseable"),
+        ];
+        for (label, reason) in cases {
+            let root = scratch_root(label);
+            match label {
+                "multiple_projects" => {
+                    write_sb3(&root.join("one.sb3"), USABLE_SB3);
+                    write_sb3(&root.join("two.sb3"), USABLE_SB3);
+                }
+                "ambiguous_with_python" => {
+                    write_sb3(&root.join("game.sb3"), USABLE_SB3);
+                    fs::write(root.join("pyproject.toml"), PYPROJECT).unwrap();
+                    fs::write(root.join("main.py"), "print('ok')\n").unwrap();
+                }
+                _ => fs::write(root.join("game.sb3"), b"not a zip").unwrap(),
+            }
+            let result = eligibility_for_root(Some(&root));
+            assert_eq!(result["ok"], false, "{label} must be refused");
+            assert_eq!(result["reason"], reason, "{label} names the rule");
+            assert_eq!(reasons(&result), vec![reason.to_owned()]);
+            let _ = fs::remove_dir_all(root);
+        }
+    }
+
+    #[test]
+    fn python_workspace_with_an_sb3_in_a_subdirectory_is_unchanged() {
+        let root = scratch_root("nested");
+        fs::create_dir_all(root.join("scratch")).unwrap();
+        write_sb3(&root.join("scratch").join("old.sb3"), USABLE_SB3);
+        fs::write(root.join("pyproject.toml"), PYPROJECT).unwrap();
+        fs::write(root.join("main.py"), "print('ok')\n").unwrap();
+        let result = workspace_runnable(Some(&root));
+        assert_eq!(result["ok"], true);
+        assert_eq!(result["projectType"], "game");
+        assert_eq!(result["appId"], "demo");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn scratch_kind_is_reported_beside_the_python_kind() {
+        let python = scratch_root("kind-python");
+        fs::write(python.join("pyproject.toml"), PYPROJECT).unwrap();
+        assert_eq!(crate::scratch::project_kind(Some(&python)), Some("python"));
+        let scratch = scratch_root("kind-scratch");
+        write_sb3(&scratch.join("game.sb3"), USABLE_SB3);
+        assert_eq!(
+            crate::scratch::project_kind(Some(&scratch)),
+            Some("scratch")
+        );
+        let _ = fs::remove_dir_all(python);
+        let _ = fs::remove_dir_all(scratch);
     }
 
     #[test]

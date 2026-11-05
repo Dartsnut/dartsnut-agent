@@ -44,7 +44,7 @@ pub(crate) fn community_base_url() -> Result<String, String> {
     if let Ok(debug_url) = std::env::var("DARTSNUT_LLM_BASE_URL") {
         return Ok(debug_url.trim_end_matches('/').to_owned());
     }
-    
+
     crate::commands::community_configured_env("DARTSNUT_BASE_API")
         .ok_or_else(|| "DARTSNUT_BASE_API is not configured.".to_owned())
         .map(|value| value.trim_end_matches('/').to_owned())
@@ -135,20 +135,18 @@ pub struct SupportedFormat {
 pub(crate) async fn community_llm_info(app: &AppHandle) -> Result<LlmBridgeInfo, String> {
     let token = community_token(app)
         .ok_or_else(|| "Sign in to your Dartsnut account to use Dartsnut LLM.".to_owned())?;
-    let (status, raw) = community_request(
-        reqwest::Method::GET,
-        "/agent/llm/info",
-        Some(&token),
-        None,
-    ).await?;
+    let (status, raw) =
+        community_request(reqwest::Method::GET, "/agent/llm/info", Some(&token), None).await?;
     if !(200..300).contains(&status) || raw.get("code").and_then(Value::as_i64) != Some(1001) {
-        let message = raw.get("desc")
+        let message = raw
+            .get("desc")
             .or_else(|| raw.get("msg"))
             .and_then(Value::as_str)
             .unwrap_or("Could not discover LLM endpoint configuration.");
         return Err(message.to_owned());
     }
-    let data = raw.get("data")
+    let data = raw
+        .get("data")
         .ok_or_else(|| "Discovery response missing data field.".to_owned())?;
     serde_json::from_value(data.clone())
         .map_err(|e| format!("Invalid discovery response: {} | Data: {:?}", e, data))
@@ -648,7 +646,9 @@ pub async fn download_app_update(
                 .lock()
                 .map_err(|_| "updater state unavailable")?;
             pending.downloading = false;
-            pending.state.download_failed("Update download failed. Try again.");
+            pending
+                .state
+                .download_failed("Update download failed. Try again.");
             let _ = app.emit("app:update-status-changed", pending.state.clone());
             return Ok(json!({"ok":false,"reason":"failed","message":message}));
         }
@@ -716,10 +716,8 @@ pub async fn check_app_update(
             Ok(json!({"ok":true}))
         }
         Err(error) => {
-            pending.state = crate::updates::UpdateState::error(
-                env!("CARGO_PKG_VERSION"),
-                error.clone(),
-            );
+            pending.state =
+                crate::updates::UpdateState::error(env!("CARGO_PKG_VERSION"), error.clone());
             let _ = app.emit("app:update-status-changed", pending.state.clone());
             Ok(json!({"ok":false,"reason":"failed","message":error}))
         }
@@ -783,9 +781,9 @@ pub async fn pick_images(app: AppHandle, payload: Option<Value>) -> Value {
         .as_ref()
         .and_then(|value| value.get("multiple").and_then(Value::as_bool))
         .unwrap_or(false);
-    
+
     let (sender, receiver) = tokio::sync::oneshot::channel();
-    
+
     if multiple {
         app.dialog()
             .file()
@@ -801,7 +799,7 @@ pub async fn pick_images(app: AppHandle, payload: Option<Value>) -> Value {
                 let _ = sender.send(path.map(|p| vec![p]));
             });
     }
-    
+
     match receiver.await.ok().flatten() {
         Some(paths) => {
             let mut files = Vec::new();
@@ -1124,6 +1122,62 @@ fn sideload_dimensions(conf: &Value) -> Result<[u32; 2], String> {
     }
 }
 
+/// The device's full panel. A game fills it and so does a Scratch project: the
+/// Scratch runtime is the device's shared painter, not a widget in a slot.
+const FULL_PANEL_SIZE: [u32; 2] = [128, 160];
+
+/// What a deploy of this workspace is named on the device, and which panel it
+/// asks for.
+#[derive(Debug, PartialEq, Eq)]
+struct DeployTarget {
+    app_id: String,
+    /// Resolved eagerly so one scan serves both paths, and fallible so a legacy
+    /// deploy — which never asks the device for a panel — does not start
+    /// failing on a size it never used.
+    size: Result<[u32; 2], String>,
+    /// True when this payload is a Scratch project. The legacy SSH path cannot
+    /// deploy one: it extracts the folder and runs `python3 main.py`, and a
+    /// Scratch payload has no `main.py` until the firmware's install path
+    /// writes it. Only `safe_sideload` scaffolds, so only it can run one.
+    scratch: bool,
+}
+
+/// Names the deploy from the workspace, and decides its panel.
+///
+/// `conf.json` names a Python project. A Scratch workspace has no `conf.json`
+/// until the firmware writes its launch scaffolding at install, so the `.sb3`
+/// — the same stem eligibility reports as `appId` — names it instead, and the
+/// project fills the panel because the Scratch runtime is the device's shared
+/// painter rather than a widget in a slot. Falling back to the placeholder name
+/// or asking a widget for its size would put the project on the device under a
+/// name the user never chose, or fail it on a file it never has.
+fn deploy_target(root: &Path, conf: &Value) -> DeployTarget {
+    let conf_id = conf
+        .get("appId")
+        .or_else(|| conf.get("app_id"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty());
+    let scratch = match crate::scratch::scan_workspace(root) {
+        crate::scratch::ScratchWorkspace::Project { app_id, .. } => Some(app_id),
+        crate::scratch::ScratchWorkspace::Absent
+        | crate::scratch::ScratchWorkspace::Refused { .. } => None,
+    };
+    let app_id = conf_id
+        .map(str::to_owned)
+        .or_else(|| scratch.clone())
+        .unwrap_or_else(|| "dartsnut-app".to_owned());
+    let size = if scratch.is_some() || conf.get("type").and_then(Value::as_str) == Some("game") {
+        Ok(FULL_PANEL_SIZE)
+    } else {
+        sideload_dimensions(conf)
+    };
+    DeployTarget {
+        app_id,
+        size,
+        scratch: scratch.is_some(),
+    }
+}
+
 #[tauri::command]
 pub async fn deploy_connect(
     app: AppHandle,
@@ -1294,11 +1348,8 @@ pub async fn deploy_run(
         .ok()
         .and_then(|body| serde_json::from_str::<Value>(&body).ok())
         .unwrap_or(Value::Null);
-    let app_id = conf
-        .get("appId")
-        .or_else(|| conf.get("app_id"))
-        .and_then(Value::as_str)
-        .unwrap_or("dartsnut-app");
+    let target = deploy_target(&workspace, &conf);
+    let app_id = target.app_id.as_str();
     if !app_id
         .chars()
         .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
@@ -1306,13 +1357,9 @@ pub async fn deploy_run(
         return Ok(json!({"ok":false,"error":"invalid app id"}));
     }
     if let Some(sideload) = state.sideload.lock().ok().and_then(|value| value.clone()) {
-        let size = if conf.get("type").and_then(Value::as_str) == Some("game") {
-            [128, 160]
-        } else {
-            match sideload_dimensions(&conf) {
-                Ok(size) => size,
-                Err(error) => return Ok(json!({"ok":false,"error":error})),
-            }
+        let size = match target.size {
+            Ok(size) => size,
+            Err(error) => return Ok(json!({"ok":false,"error":error})),
         };
         let params = payload
             .as_ref()
@@ -1323,6 +1370,17 @@ pub async fn deploy_run(
         return sideload.start(&app, &workspace, app_id, size, params).map(
             |session_id| json!({"ok":true,"sessionId":session_id,"deployMode":"safe_sideload"}),
         );
+    }
+    // A Scratch payload has no `main.py` until the firmware's install path writes
+    // it, and this path never runs that path: it extracts the folder and execs
+    // `python3 main.py`. Deploying here would leave a project on the device that
+    // cannot start, so refuse and say what to do instead of failing at launch.
+    if target.scratch {
+        return Ok(json!({
+            "ok": false,
+            "error": "This device did not answer the safe sideload protocol, so a Scratch project cannot be installed. Nothing scaffolds its launch files over the SSH fallback. Reconnect the device, or update its firmware, then deploy again.",
+            "canRetry": true
+        }));
     }
     let archive = crate::deploy::archive::create_workspace_archive(&workspace)
         .map_err(|error| error.to_string())?;
@@ -2570,5 +2628,130 @@ mod tests {
             [128, 64]
         );
         assert!(sideload_dimensions(&json!({"size": [128, 160]})).is_err());
+    }
+
+    /// A real `.sb3` on disk: a zip carrying a `project.json` manifest.
+    fn write_sb3(path: &Path, manifest: &str) {
+        use std::io::Write;
+        let file = std::fs::File::create(path).unwrap();
+        let mut writer = zip::ZipWriter::new(file);
+        writer
+            .start_file("project.json", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        writer.write_all(manifest.as_bytes()).unwrap();
+        writer.finish().unwrap();
+    }
+
+    const USABLE_SB3: &str = r#"{"targets":[{"isStage":true,"name":"Stage"}]}"#;
+
+    fn scratch_workspace(label: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "dartsnut-deploy-scratch-{label}-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        write_sb3(&root.join("game.sb3"), USABLE_SB3);
+        root
+    }
+
+    /// The deploy archive ships the workspace exactly as it sits. Nothing
+    /// synthesizes a `main.py` or `pyproject.toml` for a Scratch project: the
+    /// firmware writes its own launch scaffolding at install.
+    #[test]
+    fn scratch_archive_ships_the_bare_project_and_no_launch_scaffolding() {
+        let root = scratch_workspace("archive");
+        std::fs::create_dir_all(root.join("assets")).unwrap();
+        std::fs::write(root.join("assets/costume.svg"), b"<svg/>").unwrap();
+        // Runtime directories must still be excluded: the exclusions are the
+        // archive's rules and Scratch does not get to opt out of them.
+        std::fs::create_dir_all(root.join("node_modules/pkg")).unwrap();
+        std::fs::write(root.join("node_modules/pkg/index.js"), b"x").unwrap();
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::write(root.join(".git/config"), b"x").unwrap();
+        let original = std::fs::read(root.join("game.sb3")).unwrap();
+
+        let archive = crate::deploy::archive::create_workspace_archive(&root).unwrap();
+        let decoder = flate2::read::GzDecoder::new(std::io::Cursor::new(archive));
+        let mut tarball = tar::Archive::new(decoder);
+        let mut names = Vec::new();
+        let mut sb3 = Vec::new();
+        for entry in tarball.entries().unwrap() {
+            let mut entry = entry.unwrap();
+            let path = entry.path().unwrap().to_string_lossy().into_owned();
+            if path == "game.sb3" {
+                use std::io::Read;
+                entry.read_to_end(&mut sb3).unwrap();
+            }
+            names.push(path);
+        }
+
+        assert_eq!(names, vec!["assets/", "assets/costume.svg", "game.sb3"]);
+        assert_eq!(sb3, original, "the .sb3 must land byte for byte as it sits");
+        for injected in ["main.py", "pyproject.toml", "conf.json"] {
+            assert!(
+                !names.iter().any(|name| name == injected),
+                "deploy must not synthesize {injected} for a Scratch project"
+            );
+        }
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// A Scratch game runs on the whole 128x160 panel and has no `conf.json` to
+    /// name its size, so deploy must not consult widget sizes for it, and must
+    /// take its app id from the `.sb3` the way eligibility reports it.
+    #[test]
+    fn scratch_deploy_target_uses_the_payload_name_and_the_full_panel() {
+        let root = scratch_workspace("target");
+        let target = deploy_target(&root, &Value::Null);
+        assert_eq!(target.app_id, "game");
+        assert_eq!(target.size, Ok([128, 160]));
+        assert!(target.scratch, "a .sb3 payload must be marked as Scratch");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// The SSH fallback extracts the folder and execs `python3 main.py`, and a
+    /// Scratch payload has no `main.py` until the firmware's install path writes
+    /// it. Marking the target is what lets deploy refuse instead of shipping a
+    /// project that cannot start.
+    #[test]
+    fn scratch_deploy_target_is_marked_so_the_legacy_path_can_refuse() {
+        let scratch = scratch_workspace("legacy-refusal");
+        assert!(deploy_target(&scratch, &Value::Null).scratch);
+        let _ = std::fs::remove_dir_all(scratch);
+
+        let python = std::env::temp_dir().join(format!(
+            "dartsnut-deploy-python-not-scratch-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&python).unwrap();
+        std::fs::write(python.join("main.py"), b"print('ok')\n").unwrap();
+        assert!(
+            !deploy_target(&python, &Value::Null).scratch,
+            "a Python game must keep using the legacy path"
+        );
+        let _ = std::fs::remove_dir_all(python);
+    }
+
+    /// A Python project's deploy target is unchanged: `conf.json` still names
+    /// the app and still decides the panel.
+    #[test]
+    fn python_deploy_target_still_comes_from_conf_json() {
+        let root =
+            std::env::temp_dir().join(format!("dartsnut-deploy-python-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("main.py"), b"print('ok')\n").unwrap();
+        let widget = deploy_target(&root, &json!({"appId":"clock","size":[64,32]}));
+        assert_eq!(widget.app_id, "clock");
+        assert_eq!(widget.size, Ok([64, 32]));
+        let game = deploy_target(&root, &json!({"appId":"pong","type":"game"}));
+        assert_eq!(game.app_id, "pong");
+        assert_eq!(game.size, Ok([128, 160]));
+        // No conf and no .sb3: the existing fallback identity is untouched, and
+        // the widget rule still refuses a workspace that declares no panel
+        // rather than inventing one.
+        let bare = deploy_target(&root, &Value::Null);
+        assert_eq!(bare.app_id, "dartsnut-app");
+        assert!(bare.size.is_err());
+        let _ = std::fs::remove_dir_all(root);
     }
 }

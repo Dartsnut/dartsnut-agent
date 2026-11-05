@@ -386,8 +386,8 @@ fn jail(root: &Path, rel: &str) -> Result<PathBuf, PlanError> {
 
 fn read_utf8(path: &Path) -> Result<(String, bool), PlanError> {
     let bytes = std::fs::read(path).map_err(|e| PlanError::Hard(e.to_string()))?;
-    let text = String::from_utf8(bytes)
-        .map_err(|_| PlanError::Soft("file is not valid UTF-8".into()))?;
+    let text =
+        String::from_utf8(bytes).map_err(|_| PlanError::Soft("file is not valid UTF-8".into()))?;
     let crlf = text.contains("\r\n");
     Ok((text, crlf))
 }
@@ -403,7 +403,11 @@ fn join_file_lines(lines: &[String], crlf: bool) -> String {
     lines.join(sep)
 }
 
-fn apply_hunks(lines: &mut Vec<String>, hunks: &[Hunk], path: &str) -> Result<(usize, usize), PlanError> {
+fn apply_hunks(
+    lines: &mut Vec<String>,
+    hunks: &[Hunk],
+    path: &str,
+) -> Result<(usize, usize), PlanError> {
     let mut cursor = 0;
     let mut added = 0;
     let mut deleted = 0;
@@ -522,11 +526,7 @@ mod tests {
     #[test]
     fn add_file_single_line_has_no_extra_newline() {
         let root = temp_root();
-        let result = apply_patch(
-            &root,
-            &patch("*** Add File: hello.txt\n+hi\n"),
-        )
-        .unwrap();
+        let result = apply_patch(&root, &patch("*** Add File: hello.txt\n+hi\n")).unwrap();
         assert_eq!(result["ok"], true);
         assert_eq!(result["files"][0]["path"], "hello.txt");
         assert_eq!(result["files"][0]["action"], "add");
@@ -548,7 +548,10 @@ mod tests {
         .unwrap();
         assert_eq!(result["ok"], true);
         assert_eq!(result["files"][0]["action"], "update");
-        assert_eq!(std::fs::read(root.join("crlf.txt")).unwrap(), b"hello\r\nthere\r\n");
+        assert_eq!(
+            std::fs::read(root.join("crlf.txt")).unwrap(),
+            b"hello\r\nthere\r\n"
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -562,7 +565,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(result["ok"], true);
-        assert_eq!(std::fs::read_to_string(root.join("a.txt")).unwrap(), "hello\nthere\n");
+        assert_eq!(
+            std::fs::read_to_string(root.join("a.txt")).unwrap(),
+            "hello\nthere\n"
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -577,7 +583,10 @@ mod tests {
         .unwrap();
         assert_eq!(result["ok"], false);
         assert_eq!(result["error"], "hunk not found in a.txt");
-        assert_eq!(std::fs::read_to_string(root.join("a.txt")).unwrap(), "hello\n");
+        assert_eq!(
+            std::fs::read_to_string(root.join("a.txt")).unwrap(),
+            "hello\n"
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -585,14 +594,13 @@ mod tests {
     fn add_file_exists_leaves_file_unchanged() {
         let root = temp_root();
         std::fs::write(root.join("hello.txt"), "keep").unwrap();
-        let result = apply_patch(
-            &root,
-            &patch("*** Add File: hello.txt\n+hi\n"),
-        )
-        .unwrap();
+        let result = apply_patch(&root, &patch("*** Add File: hello.txt\n+hi\n")).unwrap();
         assert_eq!(result["ok"], false);
         assert_eq!(result["error"], "add file exists: hello.txt");
-        assert_eq!(std::fs::read_to_string(root.join("hello.txt")).unwrap(), "keep");
+        assert_eq!(
+            std::fs::read_to_string(root.join("hello.txt")).unwrap(),
+            "keep"
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -628,7 +636,10 @@ mod tests {
         assert_eq!(result["files"][0]["path"], "old.txt");
         assert_eq!(result["files"][0]["to"], "new.txt");
         assert!(!root.join("old.txt").exists());
-        assert_eq!(std::fs::read_to_string(root.join("new.txt")).unwrap(), "new\n");
+        assert_eq!(
+            std::fs::read_to_string(root.join("new.txt")).unwrap(),
+            "new\n"
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -644,7 +655,10 @@ mod tests {
         assert_eq!(result["ok"], false);
         assert_eq!(result["error"], "hunk not found in b.txt");
         assert!(!root.join("a.txt").exists());
-        assert_eq!(std::fs::read_to_string(root.join("b.txt")).unwrap(), "keep\n");
+        assert_eq!(
+            std::fs::read_to_string(root.join("b.txt")).unwrap(),
+            "keep\n"
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 

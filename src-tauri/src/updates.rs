@@ -93,6 +93,9 @@ mod tests {
         assert_eq!(state.current_version, "1.0.0");
         assert_eq!(state.available_version.as_deref(), Some("1.1.0"));
         assert_eq!(state.percent, Some(0));
-        assert_eq!(state.message.as_deref(), Some("Update download failed. Try again."));
+        assert_eq!(
+            state.message.as_deref(),
+            Some("Update download failed. Try again.")
+        );
     }
 }

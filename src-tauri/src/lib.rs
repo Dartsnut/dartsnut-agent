@@ -1,6 +1,6 @@
 use std::sync::atomic::Ordering;
 use std::time::Duration;
-use tauri::{Manager, RunEvent, WindowEvent};
+use tauri::{Emitter, Manager, RunEvent, WindowEvent};
 use tauri_plugin_window_state::StateFlags;
 
 pub mod agent;
@@ -17,6 +17,8 @@ pub mod provider;
 pub mod proxy;
 pub mod rig_runtime;
 pub mod runtime;
+pub mod scratch;
+pub mod scratch_project;
 pub mod updates;
 pub mod workspace;
 
@@ -123,6 +125,24 @@ pub fn run() {
             api.prevent_close();
             let window = window.clone();
             tauri::async_runtime::spawn(async move {
+                // Ask the renderer to flush a pending editor save before the
+                // webview goes away. Closing the window destroys it, so
+                // `pagehide` in the renderer is not a reliable place to save.
+                let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+                {
+                    let state = app.state::<commands::AppState>();
+                    // Bind the guard before the block ends: the `if let`
+                    // temporary would otherwise outlive `state` and be dropped
+                    // after it.
+                    let slot = state.quit_flush.try_lock().ok();
+                    if let Some(mut slot) = slot {
+                        *slot = Some(tx);
+                    }
+                }
+                let _ = app.emit("app:flush-before-quit", ());
+                // Best effort: a renderer that is already gone must not hold the
+                // quit for long, and an autosave writes quickly.
+                let _ = tokio::time::timeout(Duration::from_secs(3), rx).await;
                 shutdown_resources(&app).await;
                 let _ = window.close();
             });
@@ -151,6 +171,9 @@ pub fn run() {
             desktop_commands::report_renderer_error,
             desktop_commands::open_startup_logs,
             desktop_commands::open_workspace_folder,
+            commands::scratch_flush_ack,
+            scratch_project::read_scratch_project,
+            scratch_project::save_scratch_project,
             desktop_commands::copy_startup_diagnostics,
             desktop_commands::reset_renderer_state,
             desktop_commands::restart_app,
@@ -293,7 +316,9 @@ mod tests {
             !output.contains("agent lifecycle"),
             "rig agent info must stay filtered: {output}"
         );
-        assert!(output.contains("application lifecycle"), "missing application info: {output}");
+        assert!(
+            output.contains("application lifecycle"),
+            "missing application info: {output}"
+        );
     }
-
 }

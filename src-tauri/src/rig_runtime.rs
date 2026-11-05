@@ -304,8 +304,6 @@ pub async fn build_agent_with_context_async_headers(
     )
 }
 
-
-
 #[allow(clippy::too_many_arguments)]
 fn build_agent_with_http_client(
     base_url: &str,
@@ -322,7 +320,7 @@ fn build_agent_with_http_client(
         .and_then(|s| s.parse::<ApiFormat>().ok())
         .unwrap_or_default()
         .resolve();
-    
+
     // Strip version paths only for non-OpenAI formats
     // OpenAI client expects base_url to include /v1 (e.g., https://api.openai.com/v1)
     // Gemini/Claude clients append their own paths and need clean base (e.g., https://gateway.com)
@@ -376,11 +374,9 @@ fn build_agent_with_http_client(
             return Err("ApiFormat::Auto should have been resolved before this point".to_string());
         }
     };
-    
-    builder = builder
-        .name("dartsnut-agent")
-        .default_max_turns(MAX_TURNS);
-    
+
+    builder = builder.name("dartsnut-agent").default_max_turns(MAX_TURNS);
+
     if let Some(preamble) = preamble.filter(|value| !value.trim().is_empty()) {
         builder = builder.preamble(preamble);
     }
@@ -1438,11 +1434,7 @@ fn plan_emulator_input(action: &Value, depth: usize) -> Result<Vec<EmulatorInput
     Ok(steps)
 }
 
-const SKILL_IDS: &[&str] = &[
-    "dartsnut-core",
-    "dartsnut-game",
-    "dartsnut-widget",
-];
+const SKILL_IDS: &[&str] = &["dartsnut-core", "dartsnut-game", "dartsnut-widget"];
 
 fn skill_directory(workspace_root: &Path, app: Option<&AppHandle>) -> Option<PathBuf> {
     if let Some(path) = std::env::var_os("DARTSNUT_SKILLS_DIR") {
@@ -1635,7 +1627,10 @@ fn execute_workspace_tool_with_app(
             )
         }
         "apply_patch" => {
-            let patch = args.get("patch").and_then(Value::as_str).ok_or("patch is required")?;
+            let patch = args
+                .get("patch")
+                .and_then(Value::as_str)
+                .ok_or("patch is required")?;
             let result = crate::file_patch::apply_patch(&root, patch)?;
             if result.get("ok").and_then(Value::as_bool) == Some(true) {
                 if let Some(app) = app {
@@ -1875,7 +1870,9 @@ pub fn validate_agent_configuration(
     let client = reqwest::Client::builder()
         .build()
         .map_err(|error| error.to_string())?;
-    let _agent = build_agent_with_http_client(base_url, api_key, model, None, None, None, client, api_format)?;
+    let _agent = build_agent_with_http_client(
+        base_url, api_key, model, None, None, None, client, api_format,
+    )?;
     Ok(())
 }
 
@@ -2201,7 +2198,9 @@ mod tests {
 
     #[test]
     fn accepts_openai_compatible_base_url_without_key_for_custom_gateways() {
-        assert!(validate_agent_configuration("http://localhost:4000/v1", "", "model", None).is_ok());
+        assert!(
+            validate_agent_configuration("http://localhost:4000/v1", "", "model", None).is_ok()
+        );
     }
 
     #[test]
@@ -2273,7 +2272,8 @@ mod tests {
 
     #[test]
     fn grep_files_accepts_single_file_path() {
-        let root = std::env::temp_dir().join(format!("dartsnut-grep-file-{}", uuid::Uuid::new_v4()));
+        let root =
+            std::env::temp_dir().join(format!("dartsnut-grep-file-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("main.py"), "print('jump')\nprint('stay')\n").unwrap();
         let matches = execute_workspace_tool(
@@ -2341,12 +2341,9 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("main.txt"), "hello\nworld\n").unwrap();
         let patch = "*** Begin Patch\n*** Add File: extra.txt\n+hi\n*** Update File: main.txt\n@@\n hello\n-world\n+there\n*** End Patch";
-        let result = execute_workspace_tool(
-            "apply_patch",
-            &root,
-            serde_json::json!({"patch": patch}),
-        )
-        .unwrap();
+        let result =
+            execute_workspace_tool("apply_patch", &root, serde_json::json!({"patch": patch}))
+                .unwrap();
         assert_eq!(result["ok"], true);
         assert_eq!(result["files"][0]["action"], "add");
         assert_eq!(result["files"][1]["action"], "update");
@@ -2360,15 +2357,13 @@ mod tests {
 
     #[test]
     fn apply_patch_reports_missing_pyproject_workspace_status() {
-        let root = std::env::temp_dir().join(format!("dartsnut-apply-status-{}", uuid::Uuid::new_v4()));
+        let root =
+            std::env::temp_dir().join(format!("dartsnut-apply-status-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         let patch = "*** Begin Patch\n*** Add File: extra.txt\n+hi\n*** End Patch";
-        let result = execute_workspace_tool(
-            "apply_patch",
-            &root,
-            serde_json::json!({"patch": patch}),
-        )
-        .unwrap();
+        let result =
+            execute_workspace_tool("apply_patch", &root, serde_json::json!({"patch": patch}))
+                .unwrap();
         assert_eq!(result["ok"], true);
         assert_eq!(result["workspace"]["reason"], "missing_pyproject");
         let _ = std::fs::remove_dir_all(root);
@@ -2376,15 +2371,13 @@ mod tests {
 
     #[test]
     fn apply_patch_reports_runnable_game_workspace() {
-        let root = std::env::temp_dir().join(format!("dartsnut-apply-game-{}", uuid::Uuid::new_v4()));
+        let root =
+            std::env::temp_dir().join(format!("dartsnut-apply-game-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         let patch = "*** Begin Patch\n*** Add File: pyproject.toml\n+[project]\n+name = \"demo\"\n+version = \"1.2.3\"\n+dependencies = [\"pydartsnut\"]\n*** Add File: main.py\n+print('ok')\n*** End Patch";
-        let result = execute_workspace_tool(
-            "apply_patch",
-            &root,
-            serde_json::json!({"patch": patch}),
-        )
-        .unwrap();
+        let result =
+            execute_workspace_tool("apply_patch", &root, serde_json::json!({"patch": patch}))
+                .unwrap();
         assert_eq!(result["ok"], true);
         assert_eq!(result["workspace"]["ok"], true);
         assert_eq!(result["workspace"]["projectType"], "game");
@@ -2393,15 +2386,12 @@ mod tests {
 
     #[test]
     fn apply_patch_rejects_workspace_escape() {
-        let root = std::env::temp_dir().join(format!("dartsnut-apply-jail-{}", uuid::Uuid::new_v4()));
+        let root =
+            std::env::temp_dir().join(format!("dartsnut-apply-jail-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         let patch = "*** Begin Patch\n*** Add File: ../secret\n+x\n*** End Patch";
-        let err = execute_workspace_tool(
-            "apply_patch",
-            &root,
-            serde_json::json!({"patch": patch}),
-        )
-        .unwrap_err();
+        let err = execute_workspace_tool("apply_patch", &root, serde_json::json!({"patch": patch}))
+            .unwrap_err();
         assert_eq!(err, "path escapes workspace root");
         let _ = std::fs::remove_dir_all(root);
     }
@@ -2442,8 +2432,11 @@ mod tests {
 
     #[test]
     fn tap_button_presses_then_releases() {
-        let steps = plan_emulator_input(&serde_json::json!({"type":"tap_button","button":"btn_a"}), 0)
-            .unwrap();
+        let steps = plan_emulator_input(
+            &serde_json::json!({"type":"tap_button","button":"btn_a"}),
+            0,
+        )
+        .unwrap();
         assert_eq!(steps.len(), 2);
         assert_eq!(
             steps[0].command,
