@@ -3422,6 +3422,7 @@ export function App() {
           <ScratchWorkspacePanel
             projectId={bootstrap?.activeProjectId ?? null}
             readProject={() => api.readScratchProject()}
+            saveProject={(bytesBase64) => api.saveScratchProject({ bytesBase64 })}
           />
         </section>
       ) : screen === "main" ? (

@@ -145,6 +145,20 @@ export function decodeProjectBytes(bytesBase64: string): Uint8Array {
   return bytes;
 }
 
+/**
+ * The inverse of `decodeProjectBytes`, for a save travelling to the guarded
+ * command. Chunked because `String.fromCharCode` on a large array overflows the
+ * argument limit, and a project archive is easily a few megabytes.
+ */
+export function encodeProjectBytes(bytes: Uint8Array): string {
+  const chunk = 0x8000;
+  let binary = "";
+  for (let index = 0; index < bytes.length; index += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + chunk));
+  }
+  return btoa(binary);
+}
+
 export function scratchEditorUrl(): string {
   return SCRATCH_EDITOR_BUNDLE_URL;
 }
