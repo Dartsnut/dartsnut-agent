@@ -20,7 +20,14 @@ const repoRoot = path.resolve(path.dirname(scriptPath), "..");
 export const PIN_PATH = path.join(repoRoot, "scripts", "scratch-gui.pin.json");
 
 /** Files webpack emits that we deliberately do not ship. */
-export const DROPPED_ENTRYPOINTS = ["player.html", "blocks-only.html", "compatibility-testing.html"];
+export const DROPPED_ENTRYPOINTS = [
+  "player.html",
+  "blocks-only.html",
+  "compatibility-testing.html",
+  // Upstream's own GUI document. The bridge entry supersedes it: ours is the one
+  // that answers the host, and shipping both invites loading the wrong one.
+  "index.html"
+];
 
 export function readPin(pinPath = PIN_PATH) {
   const pin = JSON.parse(fs.readFileSync(pinPath, "utf8"));
@@ -129,6 +136,80 @@ function cloneUpstream(pin, checkoutDir) {
   return lockfileSha256;
 }
 
+/**
+ * Copy the bridge files into the checkout.
+ *
+ * They are additions, never edits: the bridge composes upstream modules the way
+ * upstream's own playground does, so no upstream file needs touching. That is
+ * what lets the pin stay honest about conveying the editor unmodified.
+ */
+export function installBridge(pin, checkoutDir, sourceDir) {
+  const bridge = pin.bridge;
+  if (!bridge) {
+    throw new Error("scratch-gui pin has no bridge entry; the editor would never answer the host.");
+  }
+  for (const fileName of [bridge.entrypoint, bridge.config]) {
+    const from = path.join(sourceDir, fileName);
+    if (!fs.existsSync(from)) {
+      throw new Error(`bridge source is missing: ${from}`);
+    }
+    fs.copyFileSync(from, path.join(checkoutDir, fileName));
+  }
+  return [bridge.entrypoint, bridge.config];
+}
+
+/**
+ * Files upstream generates with `prepublish`, pinned instead.
+ *
+ * Upstream's `prepublish` downloads a microbit archive from scratch.mit.edu to
+ * produce these two, and both land in gitignored paths, so a fresh clone has
+ * neither. Fetching them on every regeneration makes the build depend on a
+ * third-party HTTP endpoint for an artifact that has not changed since 1.2.0.
+ * They are committed beside the bridge patch and copied into place.
+ */
+export const PINNED_GENERATED_SOURCES = [
+  { from: "microbit/microbit-hex-url.cjs", to: "src/generated/microbit-hex-url.cjs" },
+  { from: "microbit/scratch-microbit-1.2.0.hex", to: "static/microbit/scratch-microbit-1.2.0.hex" }
+];
+
+/** Copy the pinned generated sources into the checkout. */
+export function installGeneratedSources(pin, checkoutDir, sourceDir) {
+  for (const { from, to } of PINNED_GENERATED_SOURCES) {
+    const source = path.join(sourceDir, from);
+    if (!fs.existsSync(source)) {
+      throw new Error(`pinned generated source is missing: ${source}`);
+    }
+    const target = path.join(checkoutDir, to);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.copyFileSync(source, target);
+  }
+}
+
+/**
+ * Refuse to build if the checkout has any modified tracked file.
+ *
+ * The bridge is only allowed to add. If a future pin needs us to patch upstream,
+ * this fails loudly rather than shipping an editor we describe as unmodified.
+ */
+export function assertUpstreamUnmodified(checkoutDir) {
+  const status = spawnSync("git", ["status", "--porcelain"], {
+    cwd: checkoutDir,
+    encoding: "utf8"
+  });
+  if (status.error) throw status.error;
+  const modified = (status.stdout || "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line !== "")
+    .filter((line) => !line.startsWith("??"))
+    .filter((line) => !line.includes("node_modules"));
+  if (modified.length > 0) {
+    throw new Error(
+      `the bridge must only add files to the checkout, but these upstream files were modified: ${modified.join(", ")}`
+    );
+  }
+}
+
 function copyBundle(pin, buildDir, destination) {
   fs.rmSync(destination, { recursive: true, force: true });
   fs.mkdirSync(destination, { recursive: true });
@@ -156,6 +237,7 @@ function build(pin) {
   const checkoutDir = path.join(os.homedir(), ".cache", "dartsnut", "scratch-gui", pin.commit);
   const buildDir = path.join(checkoutDir, "build");
   const destination = outputDir(pin);
+  const bridgeSourceDir = path.join(repoRoot, pin.bridge.sourceDir);
 
   console.log(`[editor-bundle] fetching ${pin.package} ${pin.version} (${pin.commit.slice(0, 8)})`);
   cloneUpstream(pin, checkoutDir);
@@ -163,8 +245,24 @@ function build(pin) {
   console.log(`[editor-bundle] npm ci`);
   run("npm", ["ci", "--no-audit", "--no-fund"], { cwd: checkoutDir });
 
+  // `npm ci` does not run upstream's `prepublish`, which downloads a microbit
+  // archive and generates two files webpack requires. Both are gitignored
+  // upstream, so a fresh clone never has them, and the download is a network
+  // dependency the build should not carry. They are pinned in the patch
+  // directory instead, byte for byte, and installed below.
+  console.log(`[editor-bundle] installing pinned generated sources`);
+  installGeneratedSources(pin, checkoutDir, bridgeSourceDir);
+
   console.log(`[editor-bundle] building with webpack`);
   run("npm", ["run", "build"], { cwd: checkoutDir });
+
+  console.log(`[editor-bundle] adding the bridge entry`);
+  installBridge(pin, checkoutDir, bridgeSourceDir);
+  run("npx", ["webpack", "--config", pin.bridge.config], { cwd: checkoutDir });
+
+  // Checked after both builds: this is the claim the notices file makes, so it is
+  // verified on every regeneration rather than trusted.
+  assertUpstreamUnmodified(checkoutDir);
 
   const copied = copyBundle(pin, buildDir, destination);
   fs.writeFileSync(stampPath(pin), `${JSON.stringify(stampFor(pin), null, 2)}\n`);

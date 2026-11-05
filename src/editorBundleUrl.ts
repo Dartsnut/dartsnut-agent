@@ -9,4 +9,4 @@
  * The bundle is a self-contained React 16 app. Load it in a same-origin iframe
  * and never import it into this tree.
  */
-export const SCRATCH_EDITOR_BUNDLE_URL = "/editor/index.html";
+export const SCRATCH_EDITOR_BUNDLE_URL = "/editor/dartsnut.html";
