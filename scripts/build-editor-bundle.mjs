@@ -30,7 +30,20 @@ export const DROPPED_ENTRYPOINTS = [
 ];
 
 export function readPin(pinPath = PIN_PATH) {
-  const pin = JSON.parse(fs.readFileSync(pinPath, "utf8"));
+  let raw;
+  try {
+    raw = fs.readFileSync(pinPath, "utf8");
+  } catch (error) {
+    throw new Error(`cannot read the scratch-gui pin at ${pinPath}: ${error.message}`);
+  }
+  let pin;
+  try {
+    pin = JSON.parse(raw);
+  } catch (error) {
+    // A corrupt pin must name itself, not surface as a bare SyntaxError from
+    // deep inside a build.
+    throw new Error(`the scratch-gui pin is not valid JSON (${pinPath}): ${error.message}`);
+  }
   for (const key of ["version", "tag", "repository", "commit", "entrypoint", "output", "url"]) {
     if (typeof pin[key] !== "string" || pin[key] === "") {
       throw new Error(`scratch-gui pin is missing "${key}" (${pinPath})`);
@@ -50,13 +63,38 @@ export function stampPath(pin, root = repoRoot) {
   return path.join(outputDir(pin, root), ".pin.json");
 }
 
-export function stampFor(pin) {
+/**
+ * Hash of the bridge patch sources, so editing the bridge invalidates a bundle
+ * built from it.
+ *
+ * Without this the stamp only described the upstream pin, so changing the
+ * bridge produced a "up to date" no-op and shipped the previous editor — a
+ * silent stale build, and the reason a fix can appear verified when it never
+ * reached the bundle.
+ */
+export function bridgeSourceHash(pin, root = repoRoot) {
+  if (!pin.bridge) return null;
+  const sourceDir = path.join(root, pin.bridge.sourceDir);
+  const files = [pin.bridge.entrypoint, pin.bridge.config]
+    .map((name) => path.join(sourceDir, name))
+    .concat(PINNED_GENERATED_SOURCES.map(({ from }) => path.join(sourceDir, from)));
+  const hash = crypto.createHash("sha256");
+  for (const file of files.sort()) {
+    if (!fs.existsSync(file)) return null;
+    hash.update(path.basename(file));
+    hash.update(fs.readFileSync(file));
+  }
+  return hash.digest("hex");
+}
+
+export function stampFor(pin, root = repoRoot) {
   return {
     package: pin.package,
     version: pin.version,
     commit: pin.commit,
     lockfileSha256: pin.lockfileSha256,
-    entrypoint: pin.entrypoint
+    entrypoint: pin.entrypoint,
+    bridgeSourceSha256: bridgeSourceHash(pin, root)
   };
 }
 
@@ -72,7 +110,10 @@ export function isUpToDate(pin, root = repoRoot) {
   } catch {
     return false;
   }
-  const expected = stampFor(pin);
+  const expected = stampFor(pin, root);
+  // A null bridge hash means the patch sources are missing; a bundle whose stamp
+  // says null cannot be trusted to match what is on disk now.
+  if (expected.bridgeSourceSha256 === null) return false;
   return Object.keys(expected).every((key) => recorded[key] === expected[key]);
 }
 
@@ -173,7 +214,7 @@ export const PINNED_GENERATED_SOURCES = [
 ];
 
 /** Copy the pinned generated sources into the checkout. */
-export function installGeneratedSources(pin, checkoutDir, sourceDir) {
+export function installGeneratedSources(checkoutDir, sourceDir) {
   for (const { from, to } of PINNED_GENERATED_SOURCES) {
     const source = path.join(sourceDir, from);
     if (!fs.existsSync(source)) {
@@ -251,7 +292,7 @@ function build(pin) {
   // dependency the build should not carry. They are pinned in the patch
   // directory instead, byte for byte, and installed below.
   console.log(`[editor-bundle] installing pinned generated sources`);
-  installGeneratedSources(pin, checkoutDir, bridgeSourceDir);
+  installGeneratedSources(checkoutDir, bridgeSourceDir);
 
   console.log(`[editor-bundle] building with webpack`);
   run("npm", ["run", "build"], { cwd: checkoutDir });

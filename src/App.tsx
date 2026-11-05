@@ -1255,6 +1255,24 @@ export function App() {
 
   const api = tauriClient;
 
+  // The quit path asks the renderer to flush before the webview is destroyed.
+  // A ref, not state: the handler must be the current one without re-subscribing.
+  const scratchFlushRef = useRef<(() => Promise<void>) | null>(null);
+
+  useEffect(() => {
+    const stop = api.onFlushBeforeQuit(() => {
+      void (async () => {
+        try {
+          await scratchFlushRef.current?.();
+        } finally {
+          // Always ack, even on failure: a failed save must not hang the quit.
+          void api.ackQuitFlush();
+        }
+      })();
+    });
+    return stop;
+  }, [api]);
+
   useEffect(() => {
     if (bootstrap) personaController.syncBootstrap(bootstrap);
   }, [bootstrap, personaController.syncBootstrap]);
@@ -3422,7 +3440,12 @@ export function App() {
           <ScratchWorkspacePanel
             projectId={bootstrap?.activeProjectId ?? null}
             readProject={() => api.readScratchProject()}
-            saveProject={(bytesBase64) => api.saveScratchProject({ bytesBase64 })}
+            saveProject={(bytesBase64, identity) =>
+              api.saveScratchProject({ bytesBase64, ...identity })
+            }
+            onFlushHandle={(flush) => {
+              scratchFlushRef.current = flush;
+            }}
           />
         </section>
       ) : screen === "main" ? (

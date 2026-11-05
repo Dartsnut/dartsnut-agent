@@ -5,12 +5,12 @@ import {
   type ScratchProjectFileResult
 } from "@dartsnut/desktop-contracts";
 import { ScratchControls } from "./ScratchControls";
-import { buttonKey, scratchKeyFor } from "./scratchInput";
+import { buttonKey, dartMessage as mapDart, scratchKeyFor } from "./scratchInput";
 import {
   attachScratchEditorBridge,
+  dartMessage,
   decodeProjectBytes,
   encodeProjectBytes,
-  dartMessage,
   keyMessage,
   loadProjectMessage,
   scratchEditorUrl,
@@ -19,9 +19,7 @@ import {
 import {
   autosaveLabel,
   canRetrySave,
-  hasUnsavedWork,
   initialAutosaveState,
-  noteEdit,
   noteSaveFailed,
   noteSaved,
   noteSaving,
@@ -33,8 +31,21 @@ export interface ScratchWorkspacePanelProps {
   projectId: string | null;
   /** Read the workspace's `.sb3` through the guarded backend command. */
   readProject: () => Promise<ScratchProjectFileResult>;
-  /** Write editor bytes back through the guarded backend command. */
-  saveProject: (bytesBase64: string) => Promise<{ ok: boolean; message?: string }>;
+  /**
+   * Write editor bytes back through the guarded backend command. The identity
+   * travels with the bytes so a save that arrives after a project switch is
+   * refused rather than written into the wrong file.
+   */
+  saveProject: (
+    bytesBase64: string,
+    identity: { projectId: string; fileName: string }
+  ) => Promise<{ ok: boolean; message?: string }>;
+  /**
+   * Receives a function that flushes pending work and settles once it is on
+   * disk. The quit path awaits this before the webview is destroyed, because
+   * closing the window is not a place the renderer gets to save afterwards.
+   */
+  onFlushHandle?: (flush: () => Promise<void>) => void;
 }
 
 type PanelError = { reason: string; detail: string; retryable: boolean };
@@ -61,7 +72,12 @@ function readFailure(error: Extract<ScratchProjectFileResult, { ok: false }>): P
  * already classified as Scratch at open, so a blank frame means the editor did
  * not come up, and the copy says that.
  */
-export function ScratchWorkspacePanel({ projectId, readProject, saveProject }: ScratchWorkspacePanelProps) {
+export function ScratchWorkspacePanel({
+  projectId,
+  readProject,
+  saveProject,
+  onFlushHandle
+}: ScratchWorkspacePanelProps) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const postRef = useRef<((message: ReturnType<typeof loadProjectMessage>) => boolean) | null>(null);
   const [phase, setPhase] = useState<ScratchEditorPhase>({ phase: "mounting" });
@@ -71,8 +87,15 @@ export function ScratchWorkspacePanel({ projectId, readProject, saveProject }: S
   const [dartIndex, setDartIndex] = useState(1);
   const [thrown, setThrown] = useState(0);
 
+  // The host passes these as inline arrows, so they are new identities on every
+  // render. Reading them through refs keeps the bridge effect stable: keyed on
+  // them directly, every App render would tear the bridge down, reset the phase
+  // to "mounting", and restart the handshake timer.
+  const readRef = useRef(readProject);
+  readRef.current = readProject;
+
   const load = useCallback(async () => {
-    const result = await readProject();
+    const result = await readRef.current();
     if (!result.ok) {
       setError(readFailure(result));
       setPhase({ phase: "failed", reason: "project-load-failed", detail: result.message });
@@ -91,31 +114,42 @@ export function ScratchWorkspacePanel({ projectId, readProject, saveProject }: S
       return;
     }
     setPhase({ phase: "ready", identity: result.identity });
-  }, [readProject]);
+  }, []);
 
   // Saves are serialised through this chain: the editor emits a save, the host
   // writes it, and a failure keeps the bytes visible rather than dropping them.
-  const lastBytes = useRef<Uint8Array | null>(null);
+  // Bytes and their identity travel together: a retry must write the same
+  // project the bytes came from, not whatever is open when the user clicks.
+  const lastBytes = useRef<{ bytes: Uint8Array; identity: { projectId: string; fileName: string } } | null>(null);
   const saveRef = useRef(saveProject);
   saveRef.current = saveProject;
 
-  const persist = useCallback(async (bytes: Uint8Array) => {
+  // The most recent write, so a quit-time flush can wait for it rather than
+  // assuming it finished.
+  const inFlight = useRef<Promise<void> | null>(null);
+
+  const persist = useCallback((bytes: Uint8Array, identity: { projectId: string; fileName: string }) => {
     // Held so a failed write can be retried without asking the editor to
     // re-serialise: the bytes the user already produced are the bytes to write.
-    lastBytes.current = bytes;
+    lastBytes.current = { bytes, identity };
     setAutosave((current) => noteSaving(current, Date.now()));
-    const result = await saveRef.current(encodeProjectBytes(bytes));
-    if (result.ok) {
-      setAutosave(noteSaved());
-      return;
-    }
-    setAutosave((current) =>
-      noteSaveFailed(
-        current,
-        result.message ?? "the project could not be written",
-        Date.now()
-      )
-    );
+    const write = (async () => {
+      const result = await saveRef.current(encodeProjectBytes(bytes), identity);
+      if (result.ok) {
+        setAutosave(noteSaved());
+        return;
+      }
+      setAutosave((current) =>
+        noteSaveFailed(
+          current,
+          result.message ?? "the project could not be written",
+          Date.now()
+        )
+      );
+    })();
+    inFlight.current = write;
+    void write;
+    return write;
   }, []);
 
   useEffect(() => {
@@ -129,7 +163,7 @@ export function ScratchWorkspacePanel({ projectId, readProject, saveProject }: S
       handlers: {
         onReady: load,
         onSave: (message) => {
-          void persist(message.bytes);
+          void persist(message.bytes, message.identity);
         },
         onFailed: (failed) => {
           setError({ reason: failed.reason, detail: failed.detail, retryable: true });
@@ -153,15 +187,48 @@ export function ScratchWorkspacePanel({ projectId, readProject, saveProject }: S
       });
     }, 10_000);
 
+    /**
+     * Write now, and settle once the write is on disk.
+     *
+     * The editor serialises asynchronously, so posting `flush` and returning
+     * would be a lie: the bytes arrive on a later message, and the host write
+     * begins then. This waits for that round trip, which is what the quit path
+     * needs before the webview is destroyed.
+     */
+    const flush = async () => {
+      const posted = bridge.post({
+        channel: BRIDGE_CHANNEL,
+        version: BRIDGE_PROTOCOL_VERSION,
+        kind: "flush"
+      });
+      if (!posted) return;
+      // Give the editor a turn to serialise and post; the write it triggers is
+      // captured in `inFlight`.
+      await new Promise((resolve) => window.setTimeout(resolve, 250));
+      const pending = inFlight.current;
+      if (pending) await pending;
+    };
+
+    // A window close through the OS does not reliably run effect cleanup, so
+    // these remain as a belt-and-braces flush for the paths that do fire.
+    const onLeave = () => {
+      void flush();
+    };
+    window.addEventListener("pagehide", onLeave);
+    window.addEventListener("beforeunload", onLeave);
+    onFlushHandle?.(flush);
+
     return () => {
       window.clearTimeout(timer);
+      window.removeEventListener("pagehide", onLeave);
+      window.removeEventListener("beforeunload", onLeave);
       // Flush before detaching: a debounced write that has not fired yet is
       // exactly the edit a project switch would otherwise drop.
-      bridge.post({ channel: BRIDGE_CHANNEL, version: BRIDGE_PROTOCOL_VERSION, kind: "flush" });
+      void flush();
       bridge.detach();
       postRef.current = null;
     };
-  }, [load, persist, projectId, attempt]);
+  }, [load, persist, projectId, attempt, onFlushHandle]);
 
   const failed = phase.phase === "failed";
 
@@ -201,8 +268,8 @@ export function ScratchWorkspacePanel({ projectId, readProject, saveProject }: S
               type="button"
               className="scratch-workspace-panel__retry"
               onClick={() => {
-                const bytes = lastBytes.current;
-                if (bytes) void persist(bytes);
+                const held = lastBytes.current;
+                if (held) void persist(held.bytes, held.identity);
               }}
             >
               Retry save
@@ -265,7 +332,11 @@ export function ScratchWorkspacePanel({ projectId, readProject, saveProject }: S
           onDart={(index, px, py) => {
             const post = postRef.current;
             if (!post) return;
-            const message = dartMessage(index, px, py);
+            // The mapping owns the band-drop rule and the index guard; this
+            // only wraps a mapped hit in the bridge envelope.
+            const mapped = mapDart(index, px, py);
+            if (!mapped) return;
+            const message = dartMessage(mapped.index, mapped.x, mapped.y);
             // A hit in the letterbox band maps to nothing and is dropped rather
             // than clamped, exactly as the device does.
             if (!message) return;

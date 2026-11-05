@@ -8,6 +8,7 @@ import {
   computeGeometry,
   dartMessage,
   isInsideStage,
+  padClickToPanel,
   panelToScratch,
   scratchKeyFor
 } from "./scratchInput";
@@ -121,5 +122,30 @@ describe("keyboard forwarding", () => {
     expect(scratchKeyFor("q")).toBeNull();
     expect(scratchKeyFor("Shift")).toBeNull();
     expect(scratchKeyFor("Escape")).toBeNull();
+  });
+});
+
+describe("pad clicks", () => {
+  it("maps the rendered pad onto play-area pixels", () => {
+    // Centre of a 128x128 pad is play-area centre.
+    expect(padClickToPanel(64, 64, 128, 128)).toEqual({ px: 64, py: 64 });
+    // The origin corner.
+    expect(padClickToPanel(0, 0, 128, 128)).toEqual({ px: 0, py: 0 });
+  });
+
+  it("scales a pad rendered at another size", () => {
+    // A 96px pad is the CSS size; the play area stays 128 pixels wide.
+    expect(padClickToPanel(48, 48, 96, 96)).toEqual({ px: 64, py: 64 });
+    expect(padClickToPanel(96, 96, 96, 96)).toEqual({ px: 128, py: 128 });
+  });
+
+  it("refuses a degenerate pad rather than dividing by zero", () => {
+    expect(padClickToPanel(10, 10, 0, 96)).toBeNull();
+    expect(padClickToPanel(10, 10, 96, 0)).toBeNull();
+  });
+
+  it("refuses a click outside the pad", () => {
+    expect(padClickToPanel(-1, 10, 128, 128)).toBeNull();
+    expect(padClickToPanel(200, 10, 128, 128)).toBeNull();
   });
 });

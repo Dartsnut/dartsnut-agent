@@ -16,7 +16,7 @@ describe("Tauri client command contract", () => {
       "rendererReady", "reportRendererError", "openStartupLogs", "openWorkspaceFolder", "readScratchProject", "saveScratchProject", "copyStartupDiagnostics",
       "resetRendererState", "restartApp", "getBootstrapState", "getWorkspaceSessionSummary",
       "resetWorkspaceSession", "listProjects", "createProject", "removeProject", "selectProject",
-      "createChat", "archiveChat", "generateChatTitle", "selectChat", "onProjectSwitchProgress",
+      "createChat", "archiveChat", "generateChatTitle", "selectChat", "onProjectSwitchProgress", "onFlushBeforeQuit", "ackQuitFlush",
       "getWindowChromeInsets", "getAppUpdateStatus", "installAppUpdateNow", "getAppUpdateAutoDownload",
       "setAppUpdateAutoDownload", "downloadAppUpdate", "checkAppUpdate", "setShellUiTheme",
       "pickWorkspace", "machineMcpSubmitQuestionAnswer", "agentQuestionSubmitAnswer", "sendPrompt",

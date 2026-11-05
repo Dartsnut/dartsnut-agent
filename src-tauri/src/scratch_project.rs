@@ -109,6 +109,30 @@ pub fn save_scratch_project(app: tauri::AppHandle, payload: Value) -> Value {
     let Some(root) = workspace_root(&app) else {
         return json!({"ok": false, "reason": "no_workspace", "message": "no workspace is selected"});
     };
+    // A save is flushed on switch, and the editor serialises asynchronously, so
+    // bytes can arrive after the workspace has already changed. Writing them to
+    // whatever is active now would put one project's content into another's
+    // file. The identity the editor echoed decides: a save is only honoured when
+    // it names the project that is active at write time.
+    let active_project = app
+        .state::<crate::commands::AppState>()
+        .active_project_id
+        .lock()
+        .ok()
+        .and_then(|value| value.clone());
+    let claimed_project = payload
+        .get("projectId")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty());
+    if let (Some(active), Some(claimed)) = (active_project.as_deref(), claimed_project) {
+        if active != claimed {
+            return json!({
+                "ok": false,
+                "reason": "stale_project",
+                "message": "this save belongs to a project that is no longer open"
+            });
+        }
+    }
     let Some(encoded) = payload
         .get("bytesBase64")
         .and_then(Value::as_str)
@@ -126,6 +150,21 @@ pub fn save_scratch_project(app: tauri::AppHandle, payload: Value) -> Value {
         Ok(found) => found,
         Err((reason, message)) => return json!({"ok": false, "reason": reason, "message": message}),
     };
+    // The file name is part of the identity too: a save for `old.sb3` must not
+    // be written over a workspace that now holds `new.sb3`.
+    if let Some(claimed_file) = payload
+        .get("fileName")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+    {
+        if claimed_file != relative {
+            return json!({
+                "ok": false,
+                "reason": "stale_project",
+                "message": "this save belongs to a different project file"
+            });
+        }
+    }
     let staging = absolute.with_extension("sb3.saving");
     if let Err(error) = std::fs::write(&staging, &bytes) {
         let _ = std::fs::remove_file(&staging);

@@ -22,7 +22,7 @@ const VERSION = 1;
 const post = (message, transfer) => {
     window.parent.postMessage(
         Object.assign({channel: CHANNEL, version: VERSION}, message),
-        '*',
+        window.location.origin,
         transfer || []
     );
 };
@@ -157,8 +157,12 @@ const handleKey = message => {
     if (message.pressed) {
         if (heldKeys.has(key)) return;
         heldKeys.add(key);
+        // `postIOData` normalises the DOM key to a Scratch key ('ArrowUp' becomes
+        // 'up arrow') and emits KEY_PRESSED itself, which starts the matching
+        // hat. Calling startHats here as well would be redundant, and passing it
+        // the raw DOM name would match nothing: a key hat's dropdown holds the
+        // Scratch name, not 'ArrowUp'.
         vm.postIOData('keyboard', {key, isDown: true});
-        vm.runtime.startHats('event_whenkeypressed', {KEY_OPTION: key});
         return;
     }
     if (!heldKeys.has(key)) return;
@@ -186,12 +190,6 @@ window.addEventListener('message', event => {
     if (data.kind === 'load-project') {
         lastIdentity = data.project;
         loadProject(data);
-        return;
-    }
-    if (data.kind === 'request-save') {
-        // The host flushes on project switch and on close; a debounced write that
-        // never fires would lose the last edit.
-        flushAutosave();
         return;
     }
     if (data.kind === 'flush') {

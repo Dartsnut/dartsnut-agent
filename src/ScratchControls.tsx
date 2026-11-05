@@ -1,4 +1,10 @@
-import { FACE_BUTTONS, DART_COUNT, buttonKey, type FaceButton } from "./scratchInput";
+import {
+  FACE_BUTTONS,
+  DART_COUNT,
+  buttonKey,
+  padClickToPanel,
+  type FaceButton
+} from "./scratchInput";
 
 export interface ScratchControlsProps {
   /** Send a dart; the mapping decides whether the hit is inside the stage. */
@@ -75,9 +81,17 @@ export function ScratchControls({
             className="scratch-controls__play-area"
             onClick={(event) => {
               const rect = event.currentTarget.getBoundingClientRect();
-              const px = Math.round(((event.clientX - rect.left) / rect.width) * 128);
-              const py = Math.round(((event.clientY - rect.top) / rect.height) * 128);
-              onDart(dartIndex, px, py);
+              // The mapping is a decision, not layout arithmetic: it lives in
+              // scratchInput with a test, so a click cannot land on the wrong
+              // pixel without a test failing.
+              const point = padClickToPanel(
+                event.clientX - rect.left,
+                event.clientY - rect.top,
+                rect.width,
+                rect.height
+              );
+              if (!point) return;
+              onDart(dartIndex, point.px, point.py);
             }}
           />
         </div>

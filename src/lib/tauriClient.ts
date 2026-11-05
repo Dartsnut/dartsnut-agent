@@ -146,7 +146,7 @@ export function createTauriClient() {
     openStartupLogs: () => invoke<void>("open_startup_logs"),
     openWorkspaceFolder: (projectId: string) => invoke<void>("open_workspace_folder", projectId),
     readScratchProject: () => invoke<ScratchProjectFileResult>("read_scratch_project"),
-    saveScratchProject: (payload: { bytesBase64: string }) => invoke<{ ok: boolean; fileName?: string; reason?: string; message?: string }>("save_scratch_project", payload),
+    saveScratchProject: (payload: { bytesBase64: string; projectId?: string; fileName?: string }) => invoke<{ ok: boolean; fileName?: string; reason?: string; message?: string }>("save_scratch_project", payload),
     copyStartupDiagnostics: () => invoke<void>("copy_startup_diagnostics"),
     resetRendererState: () => invoke<void>("reset_renderer_state"),
     restartApp: () => invoke<void>("restart_app"),
@@ -185,6 +185,9 @@ export function createTauriClient() {
     onAppUpdateStatus: (listener: Listener<AppUpdateStatus>) => subscribe("app:update-status-changed", listener),
     onSessionReset: (listener: () => void) => subscribeNoPayload("agent:session-reset", listener),
     onBootstrapStateChanged: (listener: Listener<BootstrapState>) => subscribe("agent:bootstrap-state-changed", listener),
+    /** The window is closing. Flush pending work, then call `ackQuitFlush`. */
+    onFlushBeforeQuit: (listener: () => void) => subscribeNoPayload("app:flush-before-quit", listener),
+    ackQuitFlush: () => invoke<void>("scratch_flush_ack"),
     onPythonRuntimeStatus: (listener: Listener<string | null>) => subscribe("agent:python-runtime-status", listener),
     onPythonRuntimeProgress: (listener: Listener<PythonRuntimeProgress>) => subscribe("agent:python-runtime-progress", listener),
     sendEmulatorCommand: (command: EmulatorCommand) => invoke<{ ok: boolean }>("emulator_command", command),

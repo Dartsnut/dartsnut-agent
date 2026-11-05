@@ -8,7 +8,6 @@ import {
   type ScratchProjectIdentity
 } from "@dartsnut/desktop-contracts";
 import { SCRATCH_EDITOR_BUNDLE_URL } from "./editorBundleUrl";
-import { panelToScratch } from "./scratchInput";
 
 /**
  * Host side of the editor bridge.
@@ -67,7 +66,9 @@ export function attachScratchEditorBridge(options: {
     if (!target) return false;
     const transfer =
       message.kind === "load-project" ? [message.bytes.buffer as ArrayBuffer] : [];
-    target.postMessage(message satisfies ScratchEditorMessage, "*", transfer);
+    // Same-origin by construction, so the wildcard buys nothing and would let a
+    // future nested frame receive host messages.
+    target.postMessage(message satisfies ScratchEditorMessage, window.location.origin, transfer);
     return true;
   };
 
@@ -137,23 +138,24 @@ export function loadProjectMessage(
 }
 
 /**
- * A dart throw, already mapped into stage coordinates, or `null` when the hit
- * fell in the letterbox band and must be dropped.
+ * A dart throw in stage coordinates.
+ *
+ * The coordinate rule and the 1..12 index guard live in `scratchInput`, which
+ * mirrors the firmware and carries the tests. This only wraps the result in an
+ * envelope; it deliberately does not re-derive the mapping.
  */
 export function dartMessage(
   index: number,
-  px: number,
-  py: number
-): ScratchEditorHostMessage | null {
-  const mapped = panelToScratch(px, py);
-  if (!mapped) return null;
+  x: number,
+  y: number
+): ScratchEditorHostMessage {
   return {
     channel: BRIDGE_CHANNEL,
     version: BRIDGE_PROTOCOL_VERSION,
     kind: "dart",
     index,
-    x: mapped.x,
-    y: mapped.y
+    x,
+    y
   };
 }
 

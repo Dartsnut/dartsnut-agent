@@ -8,36 +8,29 @@
  * an editor, a VM, or a filesystem.
  */
 
-/** What the panel shows about persistence. */
+/**
+ * What the panel shows about persistence.
+ *
+ * There is deliberately no "pending edit" state. The debounce lives inside the
+ * editor, which only posts bytes once it has serialised them, so the host never
+ * observes an edit it has not been handed. Modelling an edit the host cannot see
+ * would be a state no code path can ever enter.
+ */
 export type AutosaveState =
-  /** Nothing has been edited since the last successful write. */
+  /** Nothing is in flight and the last write succeeded. */
   | { state: "clean" }
-  /** An edit is waiting for the debounce to elapse. */
-  | { state: "pending"; since: number }
   /** A write is in flight. */
   | { state: "saving"; since: number }
-  /** The last write failed. `dirty` survives so the bytes are not lost. */
+  /** The last write failed. The bytes are retained so they are not lost. */
   | { state: "failed"; message: string; since: number };
-
-/**
- * A pending write is flushed on switch and on close. An edit arriving inside the
- * debounce window is the whole reason this exists: quitting must not drop it.
- */
-export const AUTOSAVE_DEBOUNCE_MS = 1000;
 
 export function initialAutosaveState(): AutosaveState {
   return { state: "clean" };
 }
 
-/** An edit landed. A failure stays visible until a write succeeds. */
-export function noteEdit(current: AutosaveState, now: number): AutosaveState {
-  if (current.state === "saving") return current;
-  return { state: "pending", since: now };
-}
-
-/** A write started. */
+/** A write started. Bytes arrived from the editor, so a write is real. */
 export function noteSaving(current: AutosaveState, now: number): AutosaveState {
-  if (current.state !== "pending" && current.state !== "failed") return current;
+  if (current.state === "saving") return current;
   return { state: "saving", since: now };
 }
 
@@ -52,15 +45,12 @@ export function noteSaveFailed(current: AutosaveState, message: string, now: num
   return { state: "failed", message, since };
 }
 
-/** Is there an edit that is not yet on disk? */
+/** Is there bytes the editor produced that are not confirmed on disk? */
 export function hasUnsavedWork(current: AutosaveState): boolean {
-  return current.state === "pending" || current.state === "saving" || current.state === "failed";
+  return current.state === "saving" || current.state === "failed";
 }
 
-/**
- * Should the panel offer a retry? A failed write is retryable; a pending one is
- * simply going to happen on its own.
- */
+/** Should the panel offer a retry? Only a failure has a retry worth offering. */
 export function canRetrySave(current: AutosaveState): boolean {
   return current.state === "failed";
 }
@@ -74,8 +64,6 @@ export function autosaveLabel(current: AutosaveState): string | null {
   switch (current.state) {
     case "clean":
       return null;
-    case "pending":
-      return "Unsaved changes";
     case "saving":
       return "Saving…";
     case "failed":

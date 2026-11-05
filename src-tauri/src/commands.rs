@@ -63,6 +63,10 @@ pub struct AppState {
     pub(crate) provider_settings: Mutex<ProviderSettingsFile>,
     /// Prevents window-close and app-exit paths from racing cleanup.
     pub quit_cleanup_started: AtomicBool,
+    /// Answered by the renderer during quit. A pending editor save is written
+    /// before the webview is destroyed; the close path waits on this briefly so
+    /// an edit inside the autosave window is not lost.
+    pub quit_flush: tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
 }
 
 pub struct PendingUpdate {
@@ -99,6 +103,7 @@ impl Default for AppState {
             }),
             provider_settings: Mutex::new(ProviderSettingsFile::default()),
             quit_cleanup_started: AtomicBool::new(false),
+            quit_flush: tokio::sync::Mutex::new(None),
         }
     }
 }
@@ -221,6 +226,24 @@ pub(crate) fn store_for_title<'a>(
 fn tree_value(store: &ProjectStore) -> Value {
     let (projects, chats) = store.list();
     json!({ "projects": projects, "chats": chats })
+}
+
+/// The renderer has finished its quit-time work.
+///
+/// The close path emits a flush request and waits on this before destroying the
+/// webview. Answering is best effort: if the renderer has nothing pending it
+/// still acks, so quitting is never held for the full timeout.
+#[tauri::command]
+pub async fn scratch_flush_ack(state: State<'_, AppState>) -> Result<(), String> {
+    let sender = state
+        .quit_flush
+        .lock()
+        .await
+        .take();
+    if let Some(sender) = sender {
+        let _ = sender.send(());
+    }
+    Ok(())
 }
 
 #[tauri::command]

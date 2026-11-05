@@ -97,10 +97,25 @@ test("shippable listing walks the build directory and drops maps and entrypoints
   }
 });
 
-test("a bundle is up to date only when the stamp matches the pin", () => {
+/** A root with the real bridge patch sources copied in, so the hash resolves. */
+function rootWithBridgeSources() {
   const root = tempRoot();
+  const pin = readPin();
+  const sources = path.join(root, pin.bridge.sourceDir);
+  for (const { from } of PINNED_GENERATED_SOURCES) {
+    const target = path.join(sources, from);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, `pinned:${from}`);
+  }
+  for (const name of [pin.bridge.entrypoint, pin.bridge.config]) {
+    fs.writeFileSync(path.join(sources, name), `// ${name}`);
+  }
+  return { root, pin, sources };
+}
+
+test("a bundle is up to date only when the stamp matches the pin", () => {
+  const { root, pin } = rootWithBridgeSources();
   try {
-    const pin = readPin();
     const destination = outputDir(pin, root);
     assert.equal(isUpToDate(pin, root), false, "nothing built yet");
 
@@ -110,14 +125,14 @@ test("a bundle is up to date only when the stamp matches the pin", () => {
     fs.writeFileSync(path.join(destination, pin.entrypoint), "<html></html>");
     assert.equal(isUpToDate(pin, root), false, "stamp missing");
 
-    fs.writeFileSync(stampPath(pin, root), JSON.stringify(stampFor(pin)));
+    fs.writeFileSync(stampPath(pin, root), JSON.stringify(stampFor(pin, root)));
     assert.equal(isUpToDate(pin, root), true);
 
     // A stamp from a different pin must force a rebuild rather than silently
     // serving a bundle built from another upstream commit.
     fs.writeFileSync(
       stampPath(pin, root),
-      JSON.stringify({ ...stampFor(pin), commit: "0".repeat(40) }),
+      JSON.stringify({ ...stampFor(pin, root), commit: "0".repeat(40) }),
     );
     assert.equal(isUpToDate(pin, root), false);
   } finally {
@@ -125,14 +140,37 @@ test("a bundle is up to date only when the stamp matches the pin", () => {
   }
 });
 
+test("editing the bridge invalidates the bundle", () => {
+  // Without this, the stamp only described the upstream pin, so a bridge change
+  // was a no-op and the previous editor shipped: a fix could look verified while
+  // never reaching the bundle.
+  const { root, pin, sources } = rootWithBridgeSources();
+  try {
+    const destination = outputDir(pin, root);
+    fs.mkdirSync(destination, { recursive: true });
+    fs.writeFileSync(path.join(destination, pin.entrypoint), "<html></html>");
+    fs.writeFileSync(stampPath(pin, root), JSON.stringify(stampFor(pin, root)));
+    assert.equal(isUpToDate(pin, root), true);
+
+    fs.writeFileSync(path.join(sources, pin.bridge.entrypoint), "// edited bridge");
+    assert.equal(
+      isUpToDate(pin, root),
+      false,
+      "a changed bridge must force a rebuild"
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("a pin without a lockfile hash never counts as up to date", () => {
-  const root = tempRoot();
+  const { root } = rootWithBridgeSources();
   try {
     const pin = { ...readPin(), lockfileSha256: "" };
     const destination = outputDir(pin, root);
     fs.mkdirSync(destination, { recursive: true });
     fs.writeFileSync(path.join(destination, pin.entrypoint), "<html></html>");
-    fs.writeFileSync(stampPath(pin, root), JSON.stringify(stampFor(pin)));
+    fs.writeFileSync(stampPath(pin, root), JSON.stringify(stampFor(pin, root)));
     assert.equal(isUpToDate(pin, root), false);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
@@ -225,7 +263,6 @@ test("the pinned generated sources exist and are committed with the bridge", () 
 test("installing pinned generated sources writes both upstream paths", () => {
   const root = tempRoot();
   try {
-    const pin = readPin();
     const checkout = path.join(root, "checkout");
     const sources = path.join(root, "sources");
     fs.mkdirSync(checkout, { recursive: true });
@@ -234,7 +271,7 @@ test("installing pinned generated sources writes both upstream paths", () => {
       fs.mkdirSync(path.dirname(target), { recursive: true });
       fs.writeFileSync(target, "pinned");
     }
-    installGeneratedSources(pin, checkout, sources);
+    installGeneratedSources(checkout, sources);
     for (const { to } of PINNED_GENERATED_SOURCES) {
       assert.ok(fs.existsSync(path.join(checkout, to)), to);
     }

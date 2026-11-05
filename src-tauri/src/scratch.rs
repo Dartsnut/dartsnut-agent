@@ -122,15 +122,31 @@ pub fn classify_candidates(root: &Path, mut candidates: Vec<PathBuf>) -> Scratch
 }
 
 /// The `.sb3` files sitting directly in `root`, ignoring AppleDouble companions.
+///
+/// A candidate that resolves outside `root` — a symlink pointing elsewhere — is
+/// dropped before anything reads it. Classification opens the archive to check
+/// its contents, so without this the workspace guard would run too late: the
+/// bytes would already be in hand. Dropping rather than refusing is deliberate:
+/// a workspace whose only `.sb3` escapes holds no readable project, which is
+/// exactly what `Absent` means.
 fn workspace_candidates(root: &Path) -> Vec<PathBuf> {
     let Ok(entries) = fs::read_dir(root) else {
         return Vec::new();
     };
+    let Ok(canonical_root) = fs::canonicalize(root) else {
+        return Vec::new();
+    };
     entries
         .filter_map(Result::ok)
-        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
-        .filter(|entry| is_scratch_candidate(&entry.file_name().to_string_lossy()))
         .map(|entry| entry.path())
+        .filter(|path| fs::metadata(path).is_ok_and(|meta| meta.is_file()))
+        .filter(|path| {
+            is_scratch_candidate(&path.file_name().unwrap_or_default().to_string_lossy())
+        })
+        .filter(|path| match fs::canonicalize(path) {
+            Ok(canonical) => canonical.starts_with(&canonical_root),
+            Err(_) => false,
+        })
         .collect()
 }
 

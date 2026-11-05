@@ -144,3 +144,26 @@ export function scratchKeyFor(key: string): string | null {
       return null;
   }
 }
+
+/**
+ * A click inside the rendered pad to a play-area pixel.
+ *
+ * This is a decision, not layout arithmetic, so it lives here with a test rather
+ * than inline in JSX: a click that maps to the wrong pixel throws a dart at the
+ * wrong place, and that is exactly the failure a preview must not have.
+ *
+ * The pad renders the play area, so the divisor is `PLAY` — not the panel, and
+ * not a bare literal that would silently disagree if the geometry changed.
+ */
+export function padClickToPanel(
+  offsetX: number,
+  offsetY: number,
+  renderedWidth: number,
+  renderedHeight: number
+): { px: number; py: number } | null {
+  if (renderedWidth <= 0 || renderedHeight <= 0) return null;
+  const px = Math.round((offsetX / renderedWidth) * PLAY.width);
+  const py = Math.round((offsetY / renderedHeight) * PLAY.height);
+  if (px < 0 || py < 0 || px > PLAY.width || py > PLAY.height) return null;
+  return { px, py };
+}
