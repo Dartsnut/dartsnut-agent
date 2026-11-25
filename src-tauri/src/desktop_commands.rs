@@ -1235,7 +1235,7 @@ pub async fn deploy_connect(
         host.clone(),
         username,
         password,
-        crate::deploy::ssh::HostKeyPolicy::TrustOnFirstUse { path },
+        crate::deploy::ssh::HostKeyPolicy::TrustLatest { path },
     );
     match crate::deploy::ssh::SshConnection::connect(config).await {
         Ok(connection) => {

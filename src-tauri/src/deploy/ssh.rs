@@ -5,6 +5,7 @@
 //! rejects every key, and this module never provides a trust-all fallback.
 
 use std::fmt;
+use std::future::Future;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -36,14 +37,23 @@ pub struct ExecOutput {
 
 /// Host-key verification policy.
 ///
-/// `KnownHosts` rejects both unknown keys and changed keys. `TrustOnFirstUse`
-/// records an unknown key only after successful key exchange, then rejects
-/// changes on later connections. `Pinned` compares the complete public key.
+/// `KnownHosts` rejects both unknown keys and changed keys. `TrustLatest`
+/// records an unknown key, and *replaces* a changed one: the store belongs to
+/// this app alone and a re-flashed device legitimately presents a new key, so a
+/// stale entry must not lock the user out of their own hardware. `Pinned`
+/// compares the complete public key.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum HostKeyPolicy {
     KnownHosts { path: PathBuf },
-    TrustOnFirstUse { path: PathBuf },
+    TrustLatest { path: PathBuf },
     Pinned(PublicKey),
+}
+
+/// How the server's key relates to the store.
+enum HostKeyStatus {
+    Present,
+    Missing,
+    Changed,
 }
 
 impl HostKeyPolicy {
@@ -77,15 +87,24 @@ impl HostKeyPolicy {
                     })
                 }
             }
-            Self::TrustOnFirstUse { path } => {
-                let known = check_known_hosts(host, port, &server_key, path)?;
-                if known {
-                    return Ok(true);
+            Self::TrustLatest { path } => {
+                match known_host_status(host, port, &server_key, path)? {
+                    HostKeyStatus::Present => Ok(true),
+                    HostKeyStatus::Missing => {
+                        keys::known_hosts::learn_known_hosts_path(host, port, &server_key, path)
+                            .map_err(|error| SshError::HostKeyStore(error.to_string()))?;
+                        Ok(true)
+                    }
+                    // The device changed its key. Rewrite the store rather than
+                    // refusing: nothing else in this app pins the identity, and
+                    // the only user with this device is the one connecting.
+                    HostKeyStatus::Changed => {
+                        forget_known_host(host, port, path)?;
+                        keys::known_hosts::learn_known_hosts_path(host, port, &server_key, path)
+                            .map_err(|error| SshError::HostKeyStore(error.to_string()))?;
+                        Ok(true)
+                    }
                 }
-
-                keys::known_hosts::learn_known_hosts_path(host, port, &server_key, path)
-                    .map_err(|error| SshError::HostKeyStore(error.to_string()))?;
-                Ok(true)
             }
         }
     }
@@ -367,7 +386,7 @@ impl Handler for PolicyHandler {
     fn disconnected(
         &mut self,
         reason: russh::client::DisconnectReason<Self::Error>,
-    ) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send {
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send {
         if let Ok(callback) = self.disconnect_callback.lock() {
             if let Some(callback) = callback.as_ref() {
                 callback();
@@ -395,6 +414,46 @@ fn check_known_hosts(
         },
         other => SshError::HostKeyStore(other.to_string()),
     })
+}
+
+/// Classify the server key against the store without collapsing a change into a
+/// plain "unknown": the two call for different actions.
+fn known_host_status(
+    host: &str,
+    port: u16,
+    key: &PublicKey,
+    path: &Path,
+) -> Result<HostKeyStatus, SshError> {
+    match check_known_hosts(host, port, key, path) {
+        Ok(true) => Ok(HostKeyStatus::Present),
+        Ok(false) => Ok(HostKeyStatus::Missing),
+        Err(SshError::HostKeyRejected { .. }) => Ok(HostKeyStatus::Changed),
+        Err(other) => Err(other),
+    }
+}
+
+/// Drop every entry for `host`, so a superseded key cannot be read again.
+///
+/// russh only records and checks; there is no remove, so this walks its own
+/// line-indexed lookup and writes the file back without those lines.
+fn forget_known_host(host: &str, port: u16, path: &Path) -> Result<(), SshError> {
+    let stale: std::collections::HashSet<usize> =
+        keys::known_hosts::known_host_keys_path(host, port, path)
+            .map_err(|error| SshError::HostKeyStore(error.to_string()))?
+            .into_iter()
+            .map(|(line, _)| line)
+            .collect();
+    if stale.is_empty() {
+        return Ok(());
+    }
+    let body = std::fs::read_to_string(path).map_err(|error| SshError::HostKeyStore(error.to_string()))?;
+    let kept: String = body
+        .lines()
+        .enumerate()
+        .filter(|(index, _)| !stale.contains(&(index + 1)))
+        .map(|(_, line)| format!("{line}\n"))
+        .collect();
+    std::fs::write(path, kept).map_err(|error| SshError::HostKeyStore(error.to_string()))
 }
 
 #[cfg(test)]
@@ -476,9 +535,9 @@ mod tests {
     }
 
     #[test]
-    fn tofu_records_unknown_key_then_accepts_it() {
+    fn trust_latest_records_unknown_key_then_accepts_it() {
         let path = temporary_path("tofu");
-        let policy = HostKeyPolicy::TrustOnFirstUse { path: path.clone() };
+        let policy = HostKeyPolicy::TrustLatest { path: path.clone() };
         let server_key = PublicKeyOrCertificate::from(key(ED25519_KEY));
 
         assert!(policy
@@ -488,6 +547,48 @@ mod tests {
         assert!(policy
             .check("example.test", 2222, &server_key)
             .expect("known TOFU key"));
+        fs::remove_file(path).expect("remove test known_hosts");
+    }
+
+    // A re-flashed device legitimately presents a new key. The store belongs to
+    // this app, so a stale entry must be replaced rather than locking the user
+    // out of their own hardware.
+    #[test]
+    fn trust_latest_replaces_a_changed_key() {
+        let path = temporary_path("tofu-changed");
+        let policy = HostKeyPolicy::TrustLatest { path: path.clone() };
+        let first = PublicKeyOrCertificate::from(key(ED25519_KEY));
+        let second = PublicKeyOrCertificate::from(key(OTHER_ED25519_KEY));
+
+        assert!(policy.check("example.test", 2222, &first).expect("first key"));
+        assert!(policy
+            .check("example.test", 2222, &second)
+            .expect("changed key is adopted"));
+        // Both the new key and the old entry's absence must hold: a leftover
+        // line would let a superseded key through next time.
+        assert!(policy.check("example.test", 2222, &second).expect("new key sticks"));
+        let stored = fs::read_to_string(&path).expect("store readable");
+        assert!(!stored.contains(&key(ED25519_KEY).to_openssh().unwrap()));
+        assert_eq!(stored.matches("example.test").count(), 1);
+        fs::remove_file(path).expect("remove test known_hosts");
+    }
+
+    #[test]
+    fn trust_latest_leaves_other_hosts_alone() {
+        let path = temporary_path("tofu-other");
+        let policy = HostKeyPolicy::TrustLatest { path: path.clone() };
+        policy
+            .check("other.test", 2222, &PublicKeyOrCertificate::from(key(OTHER_ED25519_KEY)))
+            .expect("other host recorded");
+        policy
+            .check("example.test", 2222, &PublicKeyOrCertificate::from(key(ED25519_KEY)))
+            .expect("first key");
+        policy
+            .check("example.test", 2222, &PublicKeyOrCertificate::from(key(OTHER_ED25519_KEY)))
+            .expect("changed key adopted");
+
+        let stored = fs::read_to_string(&path).expect("store readable");
+        assert_eq!(stored.matches("other.test").count(), 1, "unrelated host removed");
         fs::remove_file(path).expect("remove test known_hosts");
     }
 
