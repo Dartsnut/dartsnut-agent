@@ -289,3 +289,69 @@ test("the pinned hex is large enough to be the real archive, not a placeholder",
   );
   assert.ok(fs.statSync(hex).size > 100_000, "the microbit hex looks like a stub");
 });
+
+/**
+ * The bridge's `loadProject`, built from its own source so the test exercises
+ * the shipped sequencing rather than a copy that could drift from it.
+ */
+function bridgeLoadProject(vm, post) {
+  const source = fs.readFileSync(
+    path.join(process.cwd(), readPin().bridge.sourceDir, "dartsnut-gui.jsx"),
+    "utf8"
+  );
+  const body = source.slice(source.indexOf("let loadQueue"), source.indexOf("const saveProject"));
+  assert.ok(body.includes("loadQueue"), "the bridge no longer holds a load queue");
+  return new Function("vm", "post", "loading", "dirty", `${body}\nreturn loadProject;`)(
+    vm,
+    post,
+    { value: false },
+    { value: false }
+  );
+}
+
+// `vm.loadProject` clears the runtime and installs targets on either side of an
+// await. Two overlapping loads therefore both clear and both install, and the
+// project is left duplicated — two Stages, the second sprite renamed by the
+// unique-name pass — which the editor then autosaves over the user's `.sb3`.
+// Reproduced against scratch-vm 4.2.0 with storage latency; Node is otherwise
+// fast enough that the race never shows.
+test("two loads of the same project never overlap", async () => {
+  let active = 0;
+  let peak = 0;
+  const loaded = [];
+  const vm = {
+    loadProject: async (bytes) => {
+      active += 1;
+      peak = Math.max(peak, active);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      loaded.push(bytes);
+      active -= 1;
+    }
+  };
+  const posted = [];
+  const loadProject = bridgeLoadProject(vm, (message) => posted.push(message));
+
+  loadProject({ bytes: 1, project: { projectId: "a", fileName: "a.sb3" } });
+  loadProject({ bytes: 2, project: { projectId: "b", fileName: "b.sb3" } });
+  await new Promise((resolve) => setTimeout(resolve, 60));
+
+  assert.equal(peak, 1, "loads overlapped");
+  // The first is superseded before it runs: the user already left that project.
+  assert.deepEqual(loaded, [2]);
+  assert.deepEqual(posted.map((message) => message.kind), ["project-loaded"]);
+  assert.deepEqual(posted[0].project, { projectId: "b", fileName: "b.sb3" });
+});
+
+test("a lone load still runs and reports once", async () => {
+  const loaded = [];
+  const posted = [];
+  const vm = { loadProject: async (bytes) => { loaded.push(bytes); } };
+  const loadProject = bridgeLoadProject(vm, (message) => posted.push(message));
+
+  loadProject({ bytes: 7, project: { projectId: "a", fileName: "a.sb3" } });
+  await new Promise((resolve) => setTimeout(resolve, 30));
+
+  assert.deepEqual(loaded, [7]);
+  assert.deepEqual(posted.map((message) => message.kind), ["project-loaded"]);
+});
+

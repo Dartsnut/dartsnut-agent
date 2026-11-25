@@ -109,15 +109,24 @@ export function attachScratchEditorBridge(options: {
   // The hello tells the editor the host's version before it announces itself, so
   // an editor built from a different pin fails as a version mismatch rather than
   // as silence.
-  const onLoad = () => {
+  const hello = () => {
     post({ channel: BRIDGE_CHANNEL, version: BRIDGE_PROTOCOL_VERSION, kind: "hello" });
   };
-  iframe.addEventListener("load", onLoad);
+  // Exactly one hello per attach. The load event covers the first mount; an
+  // already-loaded document (retry, re-attach) has no second load event and must
+  // ask directly. Sending both would make the editor announce twice, and two
+  // loads race: `vm.loadProject` clears then installs across an await, so
+  // overlapping calls duplicate the project's targets.
+  if (iframe.contentDocument?.readyState === "complete") {
+    hello();
+  } else {
+    iframe.addEventListener("load", hello, { once: true });
+  }
 
   return {
     detach: () => {
       window.removeEventListener("message", onMessage);
-      iframe.removeEventListener("load", onLoad);
+      iframe.removeEventListener("load", hello);
     },
     post
   };

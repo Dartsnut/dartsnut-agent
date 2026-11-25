@@ -39,6 +39,13 @@ const AUTOSAVE_DEBOUNCE_MS = 1000;
 
 const appTarget = document.createElement('div');
 appTarget.className = 'dartsnut-app';
+// Upstream's playground document has no full-height chain, so the stage renders
+// at its intrinsic height and the rest of the frame stays empty. The host mounts
+// this document in a full-height iframe, so the chain has to reach the root.
+const fullHeightStyle = document.createElement('style');
+fullHeightStyle.textContent =
+    'html,body{height:100%;margin:0}' +
+    '.dartsnut-app{height:100%}';
 
 // Holding the project during load would be indistinguishable from an edit, so
 // autosave is suppressed until the load settles. Otherwise opening a project
@@ -46,6 +53,7 @@ appTarget.className = 'dartsnut-app';
 let loading = false;
 let autosaveTimer = null;
 let dirty = false;
+document.head.appendChild(fullHeightStyle);
 document.body.appendChild(appTarget);
 
 // `onVmInit` is a documented GUI prop: containers/gui.jsx calls it on mount with
@@ -82,25 +90,37 @@ const flushAutosave = () => {
     if (dirty) saveProject();
 };
 
-const loadProject = async (message) => {
-    if (!vm) {
-        post({kind: 'editor-error', reason: 'bridge-failed', detail: 'the VM is not ready'});
-        return;
-    }
-    loading = true;
-    dirty = false;
-    try {
-        await vm.loadProject(message.bytes);
-        loading = false;
-        post({kind: 'project-loaded', project: message.project});
-    } catch (error) {
-        loading = false;
-        post({
-            kind: 'editor-error',
-            reason: 'project-load-failed',
-            detail: String((error && error.message) || error)
-        });
-    }
+// Loads are serialised: `vm.loadProject` clears the runtime and installs targets
+// after an await, so two overlapping calls both clear and then both install,
+// leaving the project duplicated. One queued load at a time, and a superseded
+// load is skipped rather than run for a project the user already left.
+let loadQueue = Promise.resolve();
+let loadGeneration = 0;
+
+const loadProject = (message) => {
+    const generation = ++loadGeneration;
+    loadQueue = loadQueue.then(async () => {
+        // A newer load arrived while this one waited: its bytes are stale.
+        if (generation !== loadGeneration) return;
+        if (!vm) {
+            post({kind: 'editor-error', reason: 'bridge-failed', detail: 'the VM is not ready'});
+            return;
+        }
+        loading = true;
+        dirty = false;
+        try {
+            await vm.loadProject(message.bytes);
+            loading = false;
+            post({kind: 'project-loaded', project: message.project});
+        } catch (error) {
+            loading = false;
+            post({
+                kind: 'editor-error',
+                reason: 'project-load-failed',
+                detail: String((error && error.message) || error)
+            });
+        }
+    });
 };
 
 const saveProject = async () => {

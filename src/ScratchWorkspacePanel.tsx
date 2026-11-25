@@ -2,11 +2,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   BRIDGE_CHANNEL,
   BRIDGE_PROTOCOL_VERSION,
+  type ScratchEditorHostMessage,
   type ScratchProjectFileResult
 } from "@dartsnut/desktop-contracts";
 import { ScratchControls } from "./ScratchControls";
 import { buttonKey, dartMessage as mapDart, scratchKeyFor, type ThrownDart } from "./scratchInput";
 import {
+  BRIDGE_HANDSHAKE_TIMEOUT_MS,
   attachScratchEditorBridge,
   dartMessage,
   decodeProjectBytes,
@@ -79,7 +81,7 @@ export function ScratchWorkspacePanel({
   onFlushHandle
 }: ScratchWorkspacePanelProps) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
-  const postRef = useRef<((message: ReturnType<typeof loadProjectMessage>) => boolean) | null>(null);
+  const postRef = useRef<((message: ScratchEditorHostMessage) => boolean) | null>(null);
   const [phase, setPhase] = useState<ScratchEditorPhase>({ phase: "mounting" });
   const [error, setError] = useState<PanelError | null>(null);
   const [attempt, setAttempt] = useState(0);
@@ -93,6 +95,11 @@ export function ScratchWorkspacePanel({
   // to "mounting", and restart the handshake timer.
   const readRef = useRef(readProject);
   readRef.current = readProject;
+
+  // Same reason as above: an inline arrow here would restart the bridge on every
+  // App render, and the editor announces itself only once.
+  const flushHandleRef = useRef(onFlushHandle);
+  flushHandleRef.current = onFlushHandle;
 
   const load = useCallback(async () => {
     const result = await readRef.current();
@@ -185,7 +192,7 @@ export function ScratchWorkspacePanel({
         });
         return { phase: "failed", reason: "bundle-unreachable", detail: "The editor did not start." };
       });
-    }, 10_000);
+    }, BRIDGE_HANDSHAKE_TIMEOUT_MS);
 
     /**
      * Write now, and settle once the write is on disk.
@@ -216,7 +223,7 @@ export function ScratchWorkspacePanel({
     };
     window.addEventListener("pagehide", onLeave);
     window.addEventListener("beforeunload", onLeave);
-    onFlushHandle?.(flush);
+    flushHandleRef.current?.(flush);
 
     return () => {
       window.clearTimeout(timer);
@@ -228,7 +235,7 @@ export function ScratchWorkspacePanel({
       bridge.detach();
       postRef.current = null;
     };
-  }, [load, persist, projectId, attempt, onFlushHandle]);
+  }, [load, persist, projectId, attempt]);
 
   const failed = phase.phase === "failed";
 
