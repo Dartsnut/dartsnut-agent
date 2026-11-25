@@ -98,6 +98,7 @@ import { normalizeWidgetConfigSnapshot } from "./widgetParams";
 import { readyAgentProfileId, useChatPersonaController } from "./useChatPersonaController";
 import { useAutoDismiss } from "./useAutoDismiss";
 import { workspaceFixPrompt } from "./workspaceFaultCopy";
+import { isDeployReady } from "./deployReadiness";
 import { AskQuestionCard } from "./AskQuestionCard";
 import { cn } from "./cn";
 import { devLog, isDevLoggingEnabled } from "./devOnlyLog";
@@ -1114,8 +1115,7 @@ export function App() {
   const validProject = Boolean(
     activeProject &&
     bootstrap?.workspaceRoot &&
-    deployEligibility?.ok &&
-    (deployEligibility.projectType === "game" || deployEligibility.projectType === "widget")
+    isDeployReady(deployEligibility)
   );
   const chatDisabled = useMemo(() => {
     if (!bootstrap) {
