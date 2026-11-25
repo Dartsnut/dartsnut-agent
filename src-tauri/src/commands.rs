@@ -235,11 +235,7 @@ fn tree_value(store: &ProjectStore) -> Value {
 /// still acks, so quitting is never held for the full timeout.
 #[tauri::command]
 pub async fn scratch_flush_ack(state: State<'_, AppState>) -> Result<(), String> {
-    let sender = state
-        .quit_flush
-        .lock()
-        .await
-        .take();
+    let sender = state.quit_flush.lock().await.take();
     if let Some(sender) = sender {
         let _ = sender.send(());
     }
@@ -1018,7 +1014,7 @@ mod tests {
     use std::io::Write;
     use std::path::{Path, PathBuf};
 
-    const Absent: ScratchWorkspace = ScratchWorkspace::Absent;
+    const ABSENT: ScratchWorkspace = ScratchWorkspace::Absent;
 
     const PYPROJECT: &str = r#"
 [project]
@@ -1040,7 +1036,7 @@ dependencies = ["Py_DartsNut[extra] >= 1"]
 
     #[test]
     fn project_without_conf_is_eligible_game() {
-        let result = classify_dartsnut_project_files(Some(PYPROJECT), None, &Absent);
+        let result = classify_dartsnut_project_files(Some(PYPROJECT), None, &ABSENT);
         assert_eq!(result["ok"], true);
         assert_eq!(result["appId"], "demo");
         assert_eq!(result["version"], "1.2.3");
@@ -1052,7 +1048,7 @@ dependencies = ["Py_DartsNut[extra] >= 1"]
         let result = classify_dartsnut_project_files(
             Some(PYPROJECT),
             Some(r#"{"size":[128,64],"fields":[]}"#),
-            &Absent,
+            &ABSENT,
         );
         assert_eq!(result["ok"], true);
         assert_eq!(result["projectType"], "widget");
@@ -1063,7 +1059,7 @@ dependencies = ["Py_DartsNut[extra] >= 1"]
         let result = classify_dartsnut_project_files(
             Some(PYPROJECT),
             Some(r#"{"type":"game","size":[128,160],"fields":[]}"#),
-            &Absent,
+            &ABSENT,
         );
         assert_eq!(result["ok"], true);
         assert_eq!(result["projectType"], "game");
@@ -1073,11 +1069,11 @@ dependencies = ["Py_DartsNut[extra] >= 1"]
     fn invalid_project_metadata_stays_ineligible() {
         let missing_dependency = PYPROJECT.replace("Py_DartsNut[extra] >= 1", "requests");
         assert_eq!(
-            classify_dartsnut_project_files(Some(&missing_dependency), None, &Absent)["reason"],
+            classify_dartsnut_project_files(Some(&missing_dependency), None, &ABSENT)["reason"],
             "missing_pydartsnut"
         );
         assert_eq!(
-            classify_dartsnut_project_files(Some(PYPROJECT), Some("{}"), &Absent)["reason"],
+            classify_dartsnut_project_files(Some(PYPROJECT), Some("{}"), &ABSENT)["reason"],
             "conf_missing_widget_keys"
         );
     }
@@ -1085,18 +1081,18 @@ dependencies = ["Py_DartsNut[extra] >= 1"]
     #[test]
     fn pyproject_failures_report_distinct_reasons() {
         assert_eq!(
-            classify_dartsnut_project_files(Some("[project"), None, &Absent)["reason"],
+            classify_dartsnut_project_files(Some("[project"), None, &ABSENT)["reason"],
             "pyproject_unparseable"
         );
         assert_eq!(
-            classify_dartsnut_project_files(Some("name = \"demo\""), None, &Absent)["reason"],
+            classify_dartsnut_project_files(Some("name = \"demo\""), None, &ABSENT)["reason"],
             "pyproject_no_project_table"
         );
         assert_eq!(
             classify_dartsnut_project_files(
                 Some("[project]\nname = \"demo\"\nversion = \"1.0.0\"\ndependencies = \"pydartsnut\"\n"),
                 None,
-                &Absent,
+                &ABSENT,
             )["reason"],
             "pyproject_bad_dependencies"
         );
@@ -1105,15 +1101,15 @@ dependencies = ["Py_DartsNut[extra] >= 1"]
     #[test]
     fn conf_failures_report_distinct_reasons() {
         assert_eq!(
-            classify_dartsnut_project_files(Some(PYPROJECT), Some("{not json"), &Absent)["reason"],
+            classify_dartsnut_project_files(Some(PYPROJECT), Some("{not json"), &ABSENT)["reason"],
             "conf_unparseable"
         );
         assert_eq!(
-            classify_dartsnut_project_files(Some(PYPROJECT), Some("[]"), &Absent)["reason"],
+            classify_dartsnut_project_files(Some(PYPROJECT), Some("[]"), &ABSENT)["reason"],
             "conf_not_object"
         );
         assert_eq!(
-            classify_dartsnut_project_files(Some(PYPROJECT), Some(r#"{"size":[128,64]}"#), &Absent)
+            classify_dartsnut_project_files(Some(PYPROJECT), Some(r#"{"size":[128,64]}"#), &ABSENT)
                 ["reason"],
             "conf_missing_widget_keys"
         );
@@ -1180,7 +1176,7 @@ dependencies = ["Py_DartsNut[extra] >= 1"]
     fn independent_metadata_problems_are_all_reported() {
         // No name, no version, no pydartsnut: three separate things to fix.
         let broken = "[project]\ndependencies = [\"requests\"]\n";
-        let result = classify_dartsnut_project_files(Some(broken), None, &Absent);
+        let result = classify_dartsnut_project_files(Some(broken), None, &ABSENT);
         assert_eq!(result["ok"], false);
         assert_eq!(result["reason"], "missing_project_name");
         let problems: Vec<&str> = result["problems"]
