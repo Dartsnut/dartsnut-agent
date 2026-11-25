@@ -105,7 +105,7 @@ pub fn classify_candidates(root: &Path, mut candidates: Vec<PathBuf>) -> Scratch
             }
             match archive_problem(&candidate) {
                 None => ScratchWorkspace::Project {
-                    app_id: file_stem(&candidate),
+                    app_id: app_id_from_stem(&candidate),
                     path: candidate,
                 },
                 Some(problem) => ScratchWorkspace::Refused {
@@ -204,12 +204,34 @@ fn project_json_targets(reader: impl Read + std::io::Seek) -> Result<(), ()> {
     }
 }
 
-/// `game.sb3` names the project `game`: the firmware derives its install
-/// identity from the payload, and the file stem is what the user recognises.
-pub fn file_stem(path: &Path) -> String {
-    path.file_stem()
+/// The app id a `.sb3` file names its project.
+///
+/// The stem is what the user recognises, but a stem is not usable as an id: the
+/// device takes it as a directory and mount name, and `Scratch Project.sb3` —
+/// the ordinary name this app itself writes — carries a space. Slugging here
+/// means one id for the device path, the emulator's process identity, and the
+/// deploy gate, instead of each refusing a name the others accept.
+pub fn app_id_from_stem(path: &Path) -> String {
+    let stem = path
+        .file_stem()
         .map(|stem| stem.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "Scratch project".to_owned())
+        .unwrap_or_default();
+    let mut slug = String::with_capacity(stem.len());
+    for ch in stem.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' {
+            slug.push(ch);
+        } else if !slug.ends_with('-') {
+            // Runs of unusable characters collapse to one separator, so
+            // "Rock & Roll!" reads as "Rock-Roll" rather than "Rock---Roll".
+            slug.push('-');
+        }
+    }
+    let trimmed = slug.trim_matches('-');
+    if trimmed.is_empty() {
+        "dartsnut-app".to_owned()
+    } else {
+        trimmed.to_owned()
+    }
 }
 
 #[cfg(test)]
@@ -268,6 +290,40 @@ mod tests {
             scanned(&root),
             ScratchWorkspace::Project { app_id, .. } if app_id == "Game"
         ));
+    }
+
+    // The device takes the id as a directory and mount name, and `Scratch
+    // Project.sb3` is the name this app itself writes for a new project. An id
+    // with a space reached the deploy gate as "invalid app id".
+    #[test]
+    fn a_stem_with_spaces_becomes_a_usable_app_id() {
+        let root = temp_root("spaces");
+        write_sb3(&root.join("Scratch Project.sb3"), USABLE);
+        assert_eq!(
+            scanned(&root),
+            ScratchWorkspace::Project {
+                path: root.join("Scratch Project.sb3"),
+                app_id: "Scratch-Project".to_owned()
+            }
+        );
+    }
+
+    #[test]
+    fn app_ids_stay_within_what_the_device_accepts() {
+        // Characters the gate allows survive; everything else collapses to '-'.
+        assert_eq!(app_id_from_stem(Path::new("game.sb3")), "game");
+        assert_eq!(app_id_from_stem(Path::new("my_game-2.sb3")), "my_game-2");
+        assert_eq!(app_id_from_stem(Path::new("Rock & Roll!.sb3")), "Rock-Roll");
+        assert_eq!(app_id_from_stem(Path::new("  .sb3")), "dartsnut-app");
+        assert_eq!(app_id_from_stem(Path::new("游戏.sb3")), "dartsnut-app");
+        for name in ["game.sb3", "Scratch Project.sb3", "a b/c d.sb3", "!!!.sb3"] {
+            let id = app_id_from_stem(Path::new(name));
+            assert!(
+                id.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-'),
+                "{name} produced {id}"
+            );
+            assert!(!id.is_empty(), "{name} produced an empty id");
+        }
     }
 
     #[test]
