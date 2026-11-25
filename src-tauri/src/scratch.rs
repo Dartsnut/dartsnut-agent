@@ -319,7 +319,8 @@ mod tests {
         for name in ["game.sb3", "Scratch Project.sb3", "a b/c d.sb3", "!!!.sb3"] {
             let id = app_id_from_stem(Path::new(name));
             assert!(
-                id.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-'),
+                id.chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-'),
                 "{name} produced {id}"
             );
             assert!(!id.is_empty(), "{name} produced an empty id");

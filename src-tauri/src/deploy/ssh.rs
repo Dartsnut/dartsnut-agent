@@ -446,7 +446,8 @@ fn forget_known_host(host: &str, port: u16, path: &Path) -> Result<(), SshError>
     if stale.is_empty() {
         return Ok(());
     }
-    let body = std::fs::read_to_string(path).map_err(|error| SshError::HostKeyStore(error.to_string()))?;
+    let body =
+        std::fs::read_to_string(path).map_err(|error| SshError::HostKeyStore(error.to_string()))?;
     let kept: String = body
         .lines()
         .enumerate()
@@ -560,13 +561,17 @@ mod tests {
         let first = PublicKeyOrCertificate::from(key(ED25519_KEY));
         let second = PublicKeyOrCertificate::from(key(OTHER_ED25519_KEY));
 
-        assert!(policy.check("example.test", 2222, &first).expect("first key"));
+        assert!(policy
+            .check("example.test", 2222, &first)
+            .expect("first key"));
         assert!(policy
             .check("example.test", 2222, &second)
             .expect("changed key is adopted"));
         // Both the new key and the old entry's absence must hold: a leftover
         // line would let a superseded key through next time.
-        assert!(policy.check("example.test", 2222, &second).expect("new key sticks"));
+        assert!(policy
+            .check("example.test", 2222, &second)
+            .expect("new key sticks"));
         let stored = fs::read_to_string(&path).expect("store readable");
         assert!(!stored.contains(&key(ED25519_KEY).to_openssh().unwrap()));
         assert_eq!(stored.matches("example.test").count(), 1);
@@ -578,17 +583,33 @@ mod tests {
         let path = temporary_path("tofu-other");
         let policy = HostKeyPolicy::TrustLatest { path: path.clone() };
         policy
-            .check("other.test", 2222, &PublicKeyOrCertificate::from(key(OTHER_ED25519_KEY)))
+            .check(
+                "other.test",
+                2222,
+                &PublicKeyOrCertificate::from(key(OTHER_ED25519_KEY)),
+            )
             .expect("other host recorded");
         policy
-            .check("example.test", 2222, &PublicKeyOrCertificate::from(key(ED25519_KEY)))
+            .check(
+                "example.test",
+                2222,
+                &PublicKeyOrCertificate::from(key(ED25519_KEY)),
+            )
             .expect("first key");
         policy
-            .check("example.test", 2222, &PublicKeyOrCertificate::from(key(OTHER_ED25519_KEY)))
+            .check(
+                "example.test",
+                2222,
+                &PublicKeyOrCertificate::from(key(OTHER_ED25519_KEY)),
+            )
             .expect("changed key adopted");
 
         let stored = fs::read_to_string(&path).expect("store readable");
-        assert_eq!(stored.matches("other.test").count(), 1, "unrelated host removed");
+        assert_eq!(
+            stored.matches("other.test").count(),
+            1,
+            "unrelated host removed"
+        );
         fs::remove_file(path).expect("remove test known_hosts");
     }
 
