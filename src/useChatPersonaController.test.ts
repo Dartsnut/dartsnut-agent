@@ -116,6 +116,53 @@ describe("chat persona controller", () => {
     expect(state).toMatchObject({ phase: "picking", projectId: null });
   });
 
+  it("never opens the picker for a Scratch workspace", () => {
+    const state = chatPersonaReducer(INITIAL_CHAT_PERSONA_STATE, {
+      type: "bootstrap", activeProjectId: "project-1", activeChatId: null, projectKind: "scratch"
+    });
+    expect(state).toMatchObject({ phase: "no-chat", projectId: "project-1" });
+    expect(state.phase).not.toBe("picking");
+    expect(readyAgentProfileId(state, null)).toBeNull();
+  });
+
+  it("stays out of the picker when a Scratch project is selected again", () => {
+    let state = chatPersonaReducer(INITIAL_CHAT_PERSONA_STATE, {
+      type: "bootstrap", activeProjectId: "project-1", activeChatId: null, projectKind: "scratch"
+    });
+    state = chatPersonaReducer(state, { type: "new-chat", projectId: "project-1" });
+    expect(state.phase).toBe("no-chat");
+  });
+
+  it("is idempotent for a repeated Scratch bootstrap", () => {
+    const first = chatPersonaReducer(INITIAL_CHAT_PERSONA_STATE, {
+      type: "bootstrap", activeProjectId: "project-1", activeChatId: null, projectKind: "scratch"
+    });
+    expect(chatPersonaReducer(first, {
+      type: "bootstrap", activeProjectId: "project-1", activeChatId: null, projectKind: "scratch"
+    })).toBe(first);
+  });
+
+  it("leaves the no-chat phase once a Python workspace is selected", () => {
+    const scratch = chatPersonaReducer(INITIAL_CHAT_PERSONA_STATE, {
+      type: "bootstrap", activeProjectId: "project-1", activeChatId: null, projectKind: "scratch"
+    });
+    // Bootstrap without a chat lands in idle for every kind; selection then asks
+    // for a new chat, which is what opens the picker.
+    const python = chatPersonaReducer(scratch, {
+      type: "bootstrap", activeProjectId: "project-2", activeChatId: null, projectKind: "python"
+    });
+    expect(python).toMatchObject({ phase: "idle", projectId: "project-2" });
+    expect(chatPersonaReducer(python, {
+      type: "new-chat", projectId: "project-2"
+    })).toMatchObject({ phase: "picking", projectId: "project-2" });
+  });
+
+  it("keeps a Python workspace picking exactly as before", () => {
+    expect(chatPersonaReducer(INITIAL_CHAT_PERSONA_STATE, {
+      type: "bootstrap", activeProjectId: "project-1", activeChatId: null, projectKind: "python"
+    })).toMatchObject({ phase: "picking", projectId: "project-1" });
+  });
+
   it("archives into idle state instead of reopening picker", () => {
     const ready: ChatPersonaState = {
       phase: "ready", generation: 2, chatId: "chat-1", profileId: "child-creator"

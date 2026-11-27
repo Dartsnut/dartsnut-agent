@@ -58,12 +58,23 @@ export interface PythonRuntimeProgress {
   artifact?: string;
 }
 
+/**
+ * What kind of project a workspace is, decided by the backend.
+ *
+ * The renderer reads this and never derives it: a Scratch workspace has no chat
+ * and no persona picker, so the surface has to be right on the first paint, not
+ * once an eligibility call comes back.
+ */
+export type ProjectKind = "python" | "scratch";
+
 export interface BootstrapState {
   workspaceRoot: string | null;
   activeProjectId: string | null;
   activeChatId: string | null;
   providerStatus: ProviderStatus;
   firstRunComplete: boolean;
+  /** `null` when no workspace is selected. */
+  projectKind: ProjectKind | null;
 }
 
 export interface ProjectRecord { id: string; name: string; folderPath: string; createdAt: string; updatedAt: string; lastOpenedAt: string; }
@@ -180,7 +191,7 @@ export interface AgentSessionWorkspaceSummary {
   agentProfileId: AgentProfileId | null;
 }
 
-export type ProjectType = "game" | "widget";
+export type ProjectType = "game" | "widget" | "scratch";
 
 export type WidgetSize = "128x160" | "128x128" | "128x64" | "64x32";
 
@@ -348,7 +359,13 @@ export type DeployEligibilityReason =
   | "conf_unparseable"
   | "conf_not_object"
   | "conf_missing_widget_keys"
-  | "missing_main_py";
+  | "missing_main_py"
+  /** More than one `.sb3` at the workspace root. */
+  | "scratch_multiple_projects"
+  /** An `.sb3` and a `pyproject.toml` at the workspace root. */
+  | "scratch_ambiguous_with_python"
+  /** The `.sb3` will not open, or has no `project.json` with targets. */
+  | "scratch_unparseable";
 
 /** Result of classifying the workspace project files for deploy-to-machine eligibility. */
 export type DeployEligibility =

@@ -1,6 +1,7 @@
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 import { listen as tauriListen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
+  ScratchProjectFileResult,
   AgentEvent,
   AgentSessionWorkspaceSummary,
   AppUpdateInstallResponse,
@@ -144,6 +145,8 @@ export function createTauriClient() {
     reportRendererError: (payload: RendererErrorPayload) => invoke<void>("report_renderer_error", payload),
     openStartupLogs: () => invoke<void>("open_startup_logs"),
     openWorkspaceFolder: (projectId: string) => invoke<void>("open_workspace_folder", projectId),
+    readScratchProject: () => invoke<ScratchProjectFileResult>("read_scratch_project"),
+    saveScratchProject: (payload: { bytesBase64: string; projectId?: string; fileName?: string }) => invoke<{ ok: boolean; fileName?: string; reason?: string; message?: string }>("save_scratch_project", payload),
     copyStartupDiagnostics: () => invoke<void>("copy_startup_diagnostics"),
     resetRendererState: () => invoke<void>("reset_renderer_state"),
     restartApp: () => invoke<void>("restart_app"),
@@ -182,6 +185,9 @@ export function createTauriClient() {
     onAppUpdateStatus: (listener: Listener<AppUpdateStatus>) => subscribe("app:update-status-changed", listener),
     onSessionReset: (listener: () => void) => subscribeNoPayload("agent:session-reset", listener),
     onBootstrapStateChanged: (listener: Listener<BootstrapState>) => subscribe("agent:bootstrap-state-changed", listener),
+    /** The window is closing. Flush pending work, then call `ackQuitFlush`. */
+    onFlushBeforeQuit: (listener: () => void) => subscribeNoPayload("app:flush-before-quit", listener),
+    ackQuitFlush: () => invoke<void>("scratch_flush_ack"),
     onPythonRuntimeStatus: (listener: Listener<string | null>) => subscribe("agent:python-runtime-status", listener),
     onPythonRuntimeProgress: (listener: Listener<PythonRuntimeProgress>) => subscribe("agent:python-runtime-progress", listener),
     sendEmulatorCommand: (command: EmulatorCommand) => invoke<{ ok: boolean }>("emulator_command", command),

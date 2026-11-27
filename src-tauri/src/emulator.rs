@@ -336,6 +336,19 @@ fn normalize_distribution(value: &str) -> String {
 }
 
 fn classify_workspace(path: &Path) -> Result<(String, Value, String), String> {
+    // Scratch runs first, for the same reason it does in the eligibility
+    // classifier: a folder holding an `.sb3` is answering a different question
+    // than "where is pyproject.toml", and failing hard here is the message this
+    // project kind exists to stop.
+    if let crate::scratch::ScratchWorkspace::Project { app_id, .. } =
+        crate::scratch::scan_workspace(path)
+    {
+        return Ok((
+            "scratch".to_owned(),
+            Value::Object(Default::default()),
+            app_id,
+        ));
+    }
     let body = fs::read_to_string(path.join("pyproject.toml"))
         .map_err(|_| "pyproject.toml was not found".to_owned())?;
     let parsed: toml::Value = toml::from_str(&body)
@@ -1837,6 +1850,7 @@ impl EmulatorRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
 
     #[test]
     fn pdi_name_fits_darwin_limit() {
@@ -1846,6 +1860,38 @@ mod tests {
     #[test]
     fn pdo_abi_is_fifty_bytes() {
         assert_eq!(PDO_SIZE, 50);
+    }
+
+    #[test]
+    fn classify_workspace_recognises_a_scratch_project_before_pyproject() {
+        let root = std::env::temp_dir().join(format!(
+            "dartsnut-emulator-scratch-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let file = fs::File::create(root.join("game.sb3")).unwrap();
+        let mut writer = zip::ZipWriter::new(file);
+        writer
+            .start_file("project.json", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        writer
+            .write_all(br#"{"targets":[{"isStage":true,"name":"Stage"}]}"#)
+            .unwrap();
+        writer.finish().unwrap();
+
+        let (app_type, config, app_id) = classify_workspace(&root).unwrap();
+        assert_eq!(app_type, "scratch");
+        assert_eq!(app_id, "game");
+        assert!(config.is_object());
+
+        // A folder with no project file at all still reports the pyproject fault.
+        let empty = root.join("empty");
+        fs::create_dir_all(&empty).unwrap();
+        assert_eq!(
+            classify_workspace(&empty).unwrap_err(),
+            "pyproject.toml was not found"
+        );
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

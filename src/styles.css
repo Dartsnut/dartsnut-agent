@@ -3505,3 +3505,136 @@ kbd,
 @media (prefers-reduced-motion: reduce) {
   .community-confirm-card { animation: none; }
 }
+
+/* Scratch workspace: the editor owns the body, the control strip sits under the
+   stage. The panel replaces both the chat rail and the emulator for a Scratch
+   project, because one VM should render in one place. */
+.scratch-workspace-main {
+  display: flex;
+  min-width: 0;
+  padding-top: var(--main-panel-chrome-height);
+}
+
+.scratch-workspace-panel {
+  flex: 1 1 auto;
+}
+
+.scratch-workspace-panel__frame {
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 0;
+  border: 0;
+  background: #000;
+}
+
+.scratch-workspace-panel__error {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--color-edge-default);
+  background: var(--gradient-rail);
+  color: var(--color-text-primary);
+}
+
+.scratch-workspace-panel__error-title {
+  font-weight: 600;
+}
+
+.scratch-workspace-panel__error-detail {
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+
+.scratch-workspace-panel__retry {
+  align-self: flex-start;
+  padding: 4px 10px;
+  border: 1px solid currentColor;
+  border-radius: var(--radius-md);
+  font-weight: 500;
+}
+
+.scratch-workspace-panel__autosave {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 12px;
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  border-bottom: 1px solid var(--color-edge-default);
+}
+
+.scratch-workspace-panel__autosave--failed {
+  color: var(--color-text-primary);
+  background: color-mix(in oklab, firebrick 22%, transparent);
+}
+
+.scratch-workspace-panel__keyboard-capture {
+  height: 0;
+  overflow: hidden;
+}
+
+.scratch-controls {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 16px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--color-edge-default);
+  background: var(--gradient-rail);
+}
+
+.scratch-controls__darts,
+.scratch-controls__buttons {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.scratch-controls__dart-picker {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.scratch-controls__plot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.scratch-controls__play-area {
+  width: 96px;
+  height: 96px;
+  border: 1px solid var(--color-edge-default);
+  border-radius: 4px;
+  cursor: crosshair;
+  /* The letterboxed stage is 128x96 inside the 128x128 play area: 16 rows of
+     band above and below. Showing them makes a dropped throw legible. */
+  background:
+    linear-gradient(to bottom, rgb(0 0 0 / 55%) 0 16.667%, transparent 16.667% 83.333%, rgb(0 0 0 / 55%) 83.333% 100%),
+    var(--color-surface-raised, rgb(255 255 255 / 6%));
+}
+
+.scratch-controls__pad-hint {
+  font-size: 11px;
+  color: var(--color-text-secondary);
+}
+
+.scratch-controls__button {
+  min-width: 40px;
+  padding: 6px 10px;
+  border: 1px solid var(--color-edge-default);
+  border-radius: var(--radius-md);
+  font-size: 12px;
+  font-weight: 600;
+  background: transparent;
+  color: var(--color-text-primary);
+  touch-action: none;
+}
+
+.scratch-controls__button:active {
+  background: var(--color-surface-raised, rgb(255 255 255 / 12%));
+}
